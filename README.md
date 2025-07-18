@@ -1,6 +1,8 @@
 # Masscan Webscanner
 
 High-speed parallelized port scanner with automated HTML fetching and screenshotting for discovered web services.
+This Script is created with Assistence of AI!
+Please use carefully.
 
 ## 🧭 What it does
 
