@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+Masscan_Webscanner.pyz
+output/
+html/
+logs/
