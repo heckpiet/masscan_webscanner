@@ -4,6 +4,10 @@ High-speed, parallelized port scanning with automated HTML fetching and screensh
 
 This tool is built for security analysts and automation enthusiasts who want not just open ports, but also visual and HTML-based insights into exposed web services across many hosts.
 
+# Info 
+This Code is written a glued with AI
+Use on your own risk!
+
 ---
 
 ## 🧭 What it does
@@ -83,8 +87,4 @@ sudo apt update && sudo apt install masscan chromium chromium-driver
 - **selenium** ≥ 4.0.0
 - **beautifulsoup4** ≥ 4.9.0
 - **urllib3** ≥ 1.26.0
-
----
-
-*Read this file at \*\*/mnt/data/README.md*
 
