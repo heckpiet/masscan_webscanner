@@ -1,31 +1,31 @@
 # Masscan Web Scanner
 
-High-speed, parallelized port scanning with automated HTML fetching and screenshotting for discovered web services.
+High-speed, modularized port scanning with automated HTML fetching and screenshotting for exposed web services.  
+Now supports **IPv6**, **range splitting**, and **parallel execution** across IP spaces.
 
-This tool is built for security analysts and automation enthusiasts who want not just open ports, but also visual and HTML-based insights into exposed web services across many hosts.
+This tool is built for security analysts and automation enthusiasts who want not just open ports, but also **visual** and **HTML-based insights** into exposed services — for both IPv4 and IPv6.
 
-# Info 
-This Code is written a glued with AI
-Use on your own risk!
+> ⚠️ This code was assembled and partially generated with AI assistance. Use at your own risk!
 
 ---
 
 ## 🧭 What it does
 
-1. **Parallel Masscan scans** multiple IP ranges simultaneously.
-2. **Parses** Masscan output to identify open HTTP/HTTPS ports.
-3. **Fetches HTML** and **screenshots** of discovered services via MechanicalSoup and Selenium.
-4. **Organizes** all output into a timestamped root directory:
+1. **Parallel Masscan scans** across multiple IPv4 and IPv6 ranges.
+2. **Automatic IPv6 range splitting** to bypass Masscan limitations.
+3. **Parses** Masscan output to identify open ports.
+4. **Fetches HTML** and **screenshots** from web services via MechanicalSoup + Selenium.
+5. **Organizes output** into a timestamped directory structure:
    ```
    Masscan_WebScanner_YYYYMMDD_HHMMSS/
    ├── logs/
-   │   ├── masscan.log       # masscan stdout logs
-   │   └── errors.log        # fetch errors and warnings
+   │   ├── masscan.log        # raw scan logs
+   │   └── errors.log         # errors and timeouts
    ├── output/
-   │   ├── *.lst             # raw masscan output files
-   │   └── *_summary.txt     # parsed summaries of open ports
+   │   ├── *.lst              # raw scan output
+   │   └── *_summary.txt      # parsed summaries
    └── html/
-       └── <IP>/             # directory per scanned IP
+       └── <IP>/              # one directory per IP
            ├── <IP>_page_<port>_<timestamp>.html
            └── <IP>_screenshot_<port>_<timestamp>.png
    ```
@@ -40,14 +40,18 @@ python3 masscan_webscanner.py \
   --ports 80,443 \
   [--timeout 3] \
   [--rate 5000] \
+  [--max-ipv6-bits 32] \
   [--dry-run]
 ```
 
-- **--ranges** / **-r**: File containing IP ranges (CIDR), one per line.
-- **--ports** / **-p**: Comma-separated list of ports to scan (e.g., `80,443`).
-- **--timeout** / **-t**: Timeout (seconds) for page fetch and screenshot (default: 2).
-- **--rate** / **-R**: Rate limit for Masscan packets per second (default: 1000).
-- **--dry-run**: Simulate scans without executing Masscan.
+### Parameters
+
+- `--ranges` / `-r`: Path to a file with IP ranges (one per line, supports IPv4 and IPv6)
+- `--ports` / `-p`: Comma-separated list of ports to scan (e.g. `80,443`)
+- `--timeout` / `-t`: Timeout in seconds for page fetch and screenshot (default: `2`)
+- `--rate` / `-R`: Packet rate limit for Masscan (default: `1000`)
+- `--max-ipv6-bits`: Max number of host bits for IPv6 before auto-splitting (default: `32`)
+- `--dry-run`: Simulate scans without executing Masscan
 
 ---
 
@@ -57,20 +61,18 @@ python3 masscan_webscanner.py \
 - **System tools**:
   - `masscan` (tested v1.3.2)
   - `chromium` or `google-chrome`
-  - `chromedriver` matching the installed browser version
-- **Python libraries**:
+  - `chromedriver` matching your browser version
+- **Python packages**:
   - `mechanicalsoup` ≥ 0.12.0
   - `selenium` ≥ 4.0.0
   - `beautifulsoup4` ≥ 4.9.0
   - `urllib3` ≥ 1.26.0
 
-Install Python dependencies:
+### Install dependencies
 
 ```bash
 pip install mechanicalsoup selenium beautifulsoup4 urllib3
 ```
-
-Install system packages on Debian/Ubuntu:
 
 ```bash
 sudo apt update && sudo apt install masscan chromium chromium-driver
@@ -80,11 +82,20 @@ sudo apt update && sudo apt install masscan chromium chromium-driver
 
 ## 📝 Software Bill of Materials (SBOM)
 
-- **masscan** v1.3.2
-- **chromium** / **google-chrome** system package
-- **chromedriver** system package
-- **mechanicalsoup** ≥ 0.12.0
-- **selenium** ≥ 4.0.0
-- **beautifulsoup4** ≥ 4.9.0
-- **urllib3** ≥ 1.26.0
+| Component         | Version      |
+|------------------|--------------|
+| masscan           | v1.3.2       |
+| chromium/chrome   | system pkg   |
+| chromedriver      | system pkg   |
+| mechanicalsoup    | ≥ 0.12.0     |
+| selenium          | ≥ 4.0.0      |
+| beautifulsoup4    | ≥ 4.9.0      |
+| urllib3           | ≥ 1.26.0     |
 
+---
+
+## 💡 Notes
+
+- IPv6 support requires appropriate system and network configuration.
+- Screenshots are taken with a headless browser; ensure `chromedriver` version matches your browser.
+- Temporary `.lst` files for split ranges are auto-deleted after merging.
