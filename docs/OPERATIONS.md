@@ -22,6 +22,21 @@ sudo apt install chromium
 Distribution package names differ. Confirm the packaged masscan and Chromium
 versions against the distribution's supported repositories.
 
+### Kali with pipx
+
+Kali enforces PEP 668. Install the application with pipx instead of using
+`pip --user` or `--break-system-packages`:
+
+```bash
+sudo apt install -y masscan chromium chromium-driver pipx
+pipx ensurepath
+pipx install --force ./masscan_webscanner-2.0.3-py3-none-any.whl
+pipx inject --force masscan-webscanner "selenium>=4.18,<5"
+masscan-webscanner --version
+```
+
+Open a new terminal after `pipx ensurepath` if the command is not yet on `PATH`.
+
 Verify the actual toolchain before the first run:
 
 ```bash
@@ -39,10 +54,12 @@ services only.
 
 ## Privileges
 
-Masscan needs raw-packet privileges. Prefer a dedicated service account and the
-smallest mechanism supported by the host. Do not run the complete Python process
-or browser as root merely to satisfy masscan. If capabilities or a privileged
-wrapper are used, document and review that boundary locally.
+Masscan needs raw-packet privileges. Start `masscan-webscanner` as the normal
+desktop user. The automatic precheck requests sudo once, then runs only masscan
+children through non-interactive sudo. Python, Selenium and Chromium stay
+unprivileged. Do not run the complete command as root. If capabilities or a
+privileged wrapper are already configured, use `--no-sudo` and document that
+boundary locally.
 
 Masscan automatically reads `/etc/masscan/masscan.conf`. Inspect it for adapter,
 source IP/port, router MAC and exclusion settings. Command-line range, port,
@@ -65,17 +82,20 @@ artifacts, adjusted to the authorized operator group.
 `--rate` is global. The scanner divides it across active Masscan processes, so
 raising `--scan-workers` does not intentionally multiply the configured rate.
 
-Selenium 4.6 and newer ships Selenium Manager. With screenshots enabled it can
-resolve/download a matching driver into its cache. Restricted or offline hosts
-must provision a compatible ChromeDriver themselves and make it available on
-`PATH`; allow outbound access only if automated driver resolution is intended.
+With screenshots enabled, the precheck requires Selenium, Chromium and an
+operating-system ChromeDriver on `PATH`. It reads both version strings and stops
+before scanning unless their major versions match.
+
+The precheck also prints the application version, authorized-range count,
+writable output path, Python dependencies, masscan location and sudo status.
+`--dry-run` intentionally skips runtime executable and sudo requirements.
 
 ## Automation
 
 Use the CLI's status codes:
 
 - `0`: all selected work succeeded;
-- `1`: at least one scan or fetch failed;
+- `1`: at least one scan, fetch or screenshot failed;
 - `2`: configuration, input or dependency error.
 
 Each invocation should use its own output directory. Monitor free disk space and
@@ -90,6 +110,7 @@ restrictive umask. Do not embed credentials in unit files or command lines.
 Captured pages can contain sensitive data. Define an engagement-specific
 retention period, encrypt backups where required and remove expired artifacts.
 
-Upgrade in a fresh virtual environment, rerun `--help` and a dry-run, then scan a
-small controlled range. Retain the previous environment until verification is
-complete so rollback does not require reinstalling packages during an incident.
+For pipx upgrades, install the new wheel with `pipx install --force`, inject the
+screenshot dependency, confirm `masscan-webscanner --version`, and run a dry-run
+before a small controlled scan. Retain the previous wheel until verification is
+complete so rollback does not require rebuilding during an incident.

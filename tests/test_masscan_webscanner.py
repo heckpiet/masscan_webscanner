@@ -50,6 +50,13 @@ def test_cli_rejects_non_positive_workers(tmp_path: Path) -> None:
         parse_args(["-r", str(tmp_path / "ranges"), "-p", "80", "--scan-workers", "0"])
 
 
+def test_cli_reports_package_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--version"])
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.0.3"
+
+
 def test_cli_uses_python_310_compatible_utc_timestamp(tmp_path: Path) -> None:
     config = parse_args(["-r", str(tmp_path / "ranges"), "-p", "80"])
     assert config.output_dir.name.startswith("Masscan_WebScanner_")
@@ -83,7 +90,7 @@ def test_run_scan_invokes_masscan_without_shell(tmp_path: Path, monkeypatch: pyt
         calls.append(command)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    config = AppConfig(tmp_path / "ranges", "80,443", tmp_path, masscan="masscan")
+    config = AppConfig(tmp_path / "ranges", "80,443", tmp_path, masscan="masscan", use_sudo=False)
     result = scanner.run_scan("192.0.2.0/24", 2, config, tmp_path, 500)
     assert result == tmp_path / "range_0002_192_0_2_0_24.lst"
     assert calls[0] == [
@@ -96,6 +103,51 @@ def test_run_scan_invokes_masscan_without_shell(tmp_path: Path, monkeypatch: pyt
         "-oL",
         str(result),
     ]
+
+
+def test_run_scan_uses_noninteractive_sudo_after_authorization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scanner, "should_use_sudo", lambda config: True)
+    run = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path)
+    scanner.run_scan("192.0.2.0/24", 1, config, tmp_path, 250)
+    assert run.call_args.args[0][:3] == ["sudo", "-n", "masscan"]
+
+
+def test_authorize_masscan_prompts_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(scanner, "should_use_sudo", lambda config: True)
+    run = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    scanner.authorize_masscan(AppConfig(tmp_path / "ranges", "80", tmp_path))
+    run.assert_called_once_with(["sudo", "-v"], check=True)
+
+
+def test_precheck_accepts_matching_browser_and_driver_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path, screenshots=True, use_sudo=False)
+    monkeypatch.setattr(scanner, "require_dependencies", lambda config: "/usr/bin/chromium")
+    monkeypatch.setattr(scanner, "find_chromedriver", lambda: "/usr/bin/chromedriver")
+    monkeypatch.setattr(scanner.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(
+        scanner,
+        "executable_version",
+        lambda executable: "Chromium 148.0" if executable.endswith("chromium") else "ChromeDriver 148.0",
+    )
+    result = scanner.run_precheck(config, [ipaddress.ip_network("192.0.2.0/24")], {"output": tmp_path})
+    assert result == "/usr/bin/chromium"
+
+
+def test_precheck_rejects_browser_driver_version_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path, screenshots=True, use_sudo=False)
+    monkeypatch.setattr(scanner, "require_dependencies", lambda config: "/usr/bin/chromium")
+    monkeypatch.setattr(scanner, "find_chromedriver", lambda: "/usr/bin/chromedriver")
+    monkeypatch.setattr(scanner.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(
+        scanner,
+        "executable_version",
+        lambda executable: "Chromium 148.0" if executable.endswith("chromium") else "ChromeDriver 147.0",
+    )
+    with pytest.raises(RuntimeError, match="version mismatch"):
+        scanner.run_precheck(config, [ipaddress.ip_network("192.0.2.0/24")], {"output": tmp_path})
 
 
 class FakeResponse:
@@ -133,21 +185,43 @@ def test_fetch_does_not_follow_redirects(tmp_path: Path, monkeypatch: pytest.Mon
     session = FakeSession(FakeResponse([b"hello"]))
     monkeypatch.setattr("requests.Session", Mock(return_value=session))
     config = AppConfig(tmp_path / "ranges", "80", tmp_path)
-    target, ok, error = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, None)
-    assert (target, ok, error) == (("192.0.2.1", 80), True, None)
+    result = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, None)
+    assert result == scanner.ArchiveResult(("192.0.2.1", 80), html_ok=True)
     assert session.get.call_args.kwargs["allow_redirects"] is False
     assert session.trust_env is False
     assert (tmp_path / "192_0_2_1" / "192_0_2_1_80.html").read_bytes() == b"hello"
+
+
+def test_fetch_archives_http_error_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session = FakeSession(FakeResponse([b"not found"], status_code=404))
+    monkeypatch.setattr("requests.Session", Mock(return_value=session))
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path)
+    result = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, None)
+    assert result.html_ok
+    assert (tmp_path / "192_0_2_1" / "192_0_2_1_80.html").read_bytes() == b"not found"
 
 
 def test_fetch_removes_partial_file_above_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     session = FakeSession(FakeResponse([b"1234", b"5678"]))
     monkeypatch.setattr("requests.Session", Mock(return_value=session))
     config = AppConfig(tmp_path / "ranges", "80", tmp_path, max_html_bytes=5)
-    _, ok, error = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, None)
-    assert not ok
-    assert "max-html-bytes" in (error or "")
+    result = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, None)
+    assert not result.html_ok
+    assert "max-html-bytes" in (result.html_error or "")
     assert not (tmp_path / "192_0_2_1" / "192_0_2_1_80.html").exists()
+
+
+def test_screenshot_failure_preserves_archived_html(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session = FakeSession(FakeResponse([b"hello"]))
+    monkeypatch.setattr("requests.Session", Mock(return_value=session))
+    monkeypatch.setattr(scanner, "capture_screenshot", Mock(side_effect=RuntimeError("browser failed")))
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path, screenshots=True)
+    result = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, "/usr/bin/chromium")
+    assert result.html_ok
+    assert result.screenshot_attempted
+    assert not result.screenshot_ok
+    assert result.screenshot_error == "browser failed"
+    assert (tmp_path / "192_0_2_1" / "192_0_2_1_80.html").read_bytes() == b"hello"
 
 
 def test_run_summary_is_machine_readable(tmp_path: Path) -> None:
@@ -156,12 +230,13 @@ def test_run_summary_is_machine_readable(tmp_path: Path) -> None:
         scan_succeeded=2,
         scan_failed=1,
         targets={("192.0.2.1", 80)},
-        fetch_attempted=1,
-        fetch_failed=[(("192.0.2.1", 80), "timeout")],
+        archive_results=[scanner.ArchiveResult(("192.0.2.1", 80), html_ok=False, html_error="timeout")],
+        fetch_skipped=0,
     )
     summary = json.loads((tmp_path / "run-summary.json").read_text())
     assert summary["scan_jobs"] == {"succeeded": 2, "failed": 1}
     assert summary["fetches"] == {"attempted": 1, "succeeded": 0, "failed": 1, "skipped": 0}
+    assert summary["screenshots"] == {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 1}
 
 
 def test_main_returns_configuration_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -184,7 +259,7 @@ def test_run_reports_scan_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     ranges = tmp_path / "ranges"
     ranges.write_text("192.0.2.0/30\n")
     output = tmp_path / "result"
-    config = AppConfig(ranges, "80", output, skip_fetch=True)
+    config = AppConfig(ranges, "80", output, skip_fetch=True, use_sudo=False)
     monkeypatch.setattr(scanner, "require_dependencies", lambda config: None)
 
     def fail_scan(*args: object, **kwargs: object) -> None:
@@ -200,7 +275,7 @@ def test_run_collects_targets_and_fetch_failures(tmp_path: Path, monkeypatch: py
     ranges = tmp_path / "ranges"
     ranges.write_text("192.0.2.0/30\n")
     output = tmp_path / "result"
-    config = AppConfig(ranges, "80", output)
+    config = AppConfig(ranges, "80", output, use_sudo=False)
     monkeypatch.setattr(scanner, "require_dependencies", lambda config: None)
 
     def successful_scan(network: str, index: int, config: AppConfig, output_dir: Path, worker_rate: int) -> Path:
@@ -212,7 +287,7 @@ def test_run_collects_targets_and_fetch_failures(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(
         scanner,
         "fetch_target",
-        lambda target, html_dir, config, browser: (target, False, "timeout"),
+        lambda target, html_dir, config, browser: scanner.ArchiveResult(target, html_ok=False, html_error="timeout"),
     )
     assert scanner.run(config) == 1
     summary = json.loads((output / "run-summary.json").read_text())
@@ -230,8 +305,16 @@ def test_dependency_checks_match_execution_mode(tmp_path: Path, monkeypatch: pyt
 
     executable = tmp_path / "masscan"
     executable.touch()
-    scan_only = AppConfig(tmp_path / "ranges", "80", tmp_path, masscan=str(executable), skip_fetch=True)
+    scan_only = AppConfig(tmp_path / "ranges", "80", tmp_path, masscan=str(executable), skip_fetch=True, use_sudo=False)
     assert scanner.require_dependencies(scan_only) is None
+
+
+def test_screenshot_dependencies_require_chromedriver(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    available = {"masscan": "/usr/bin/masscan", "sudo": "/usr/bin/sudo", "chromium": "/usr/bin/chromium"}
+    monkeypatch.setattr(scanner.shutil, "which", lambda name: available.get(name))
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path, screenshots=True)
+    with pytest.raises(RuntimeError, match="ChromeDriver not found"):
+        scanner.require_dependencies(config)
 
 
 def test_capture_screenshot_keeps_chrome_sandbox_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -239,8 +322,11 @@ def test_capture_screenshot_keeps_chrome_sandbox_enabled(tmp_path: Path, monkeyp
 
     driver = Mock()
     monkeypatch.setattr(webdriver, "Chrome", Mock(return_value=driver))
+    monkeypatch.setattr(scanner, "find_chromedriver", lambda: "/usr/bin/chromedriver")
     config = AppConfig(tmp_path / "ranges", "80", tmp_path, screenshots=True)
     scanner.capture_screenshot("http://192.0.2.1:80", tmp_path / "page.png", "chrome", config)
     options = webdriver.Chrome.call_args.kwargs["options"]
+    service = webdriver.Chrome.call_args.kwargs["service"]
+    assert service.path == "/usr/bin/chromedriver"
     assert "--no-sandbox" not in options.arguments
     driver.quit.assert_called_once()

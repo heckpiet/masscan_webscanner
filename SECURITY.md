@@ -30,6 +30,11 @@ resources outside the supplied ranges. Only enable it when the authorization
 also permits that traffic. Never run the scanner or open captured HTML with
 unnecessary elevated privileges.
 
+Start the application as a normal user. Its one-time sudo authorization is
+applied only to masscan child processes; Python, Selenium and Chromium remain
+unprivileged. `--no-sudo` is intended for an explicitly configured masscan
+capability or privilege boundary. Do not run the complete application as root.
+
 The output directory can contain credentials, internal hostnames and malicious
 content. Restrict access, define retention, keep it out of source control and
 delete it according to the engagement's data-handling rules.
