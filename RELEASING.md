@@ -8,7 +8,10 @@
 5. Watch the Release workflow. It must test, build, validate, install and attest
    the distributions before creating the GitHub Release.
 6. Download the release wheel in a clean environment and run
-   `masscan-webscanner --help` plus an authorized dry-run.
+   `masscan-webscanner --version`, `--help` and an authorized dry-run.
+7. Confirm the source archive contains `README.md`, `CHANGELOG.md`,
+   `SECURITY.md`, `RELEASING.md` and the `docs/` files.
+8. Record SHA-256 hashes for the wheel and source archive in the release notes.
 
 Do not reuse or move a published tag. If validation fails, fix the cause through
 a pull request and issue a new patch version. PyPI publication is not currently

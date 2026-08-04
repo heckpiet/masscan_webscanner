@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import ipaddress
 import itertools
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -19,7 +21,9 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOGGER = logging.getLogger("masscan_webscanner")
+__version__ = "2.0.3"
 DEFAULT_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "chrome")
+DEFAULT_CHROMEDRIVERS = ("chromedriver", "chromium-driver")
 HTTPS_PORTS = frozenset({443, 8443, 9443})
 
 
@@ -40,10 +44,26 @@ class AppConfig:
     max_html_bytes: int = 5_000_000
     masscan: str = "masscan"
     browser: str | None = None
+    use_sudo: bool = True
+
+
+@dataclass(frozen=True)
+class ArchiveResult:
+    target: tuple[str, int]
+    html_ok: bool
+    html_error: str | None = None
+    screenshot_attempted: bool = False
+    screenshot_ok: bool = False
+    screenshot_error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.html_ok and (not self.screenshot_attempted or self.screenshot_ok)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
     parser = argparse.ArgumentParser(description="Scan authorized IP ranges and archive discovered web services.")
+    parser.add_argument("--version", action="version", version=f"masscan-webscanner {__version__}")
     parser.add_argument("--ranges", "-r", required=True, type=Path)
     parser.add_argument("--ports", "-p", required=True, help="masscan port expression, e.g. 80,443,8000-8100")
     parser.add_argument("--output-dir", "-o", type=Path, help="output root (default: timestamped directory)")
@@ -53,6 +73,11 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
     parser.add_argument("--fetch-workers", type=int, default=8)
     parser.add_argument("--max-ipv6-host-bits", "--max-ipv6-bits", dest="max_ipv6_host_bits", type=int, default=32)
     parser.add_argument("--masscan", default="masscan", help="masscan executable path")
+    parser.add_argument(
+        "--no-sudo",
+        action="store_true",
+        help="run masscan directly (for capabilities or an already privileged account)",
+    )
     parser.add_argument("--browser", help="Chrome/Chromium executable path")
     parser.add_argument("--skip-fetch", action="store_true", help="only scan and create summaries")
     parser.add_argument(
@@ -91,6 +116,7 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
         max_html_bytes=ns.max_html_bytes,
         masscan=ns.masscan,
         browser=ns.browser,
+        use_sudo=not ns.no_sudo,
     )
 
 
@@ -151,17 +177,97 @@ def find_browser(explicit: str | None = None) -> str | None:
     return next((path for name in DEFAULT_BROWSERS if (path := shutil.which(name))), None)
 
 
+def find_chromedriver() -> str | None:
+    """Return an OS-provided ChromeDriver so Selenium Manager is not needed."""
+    return next((path for name in DEFAULT_CHROMEDRIVERS if (path := shutil.which(name))), None)
+
+
 def require_dependencies(config: AppConfig) -> str | None:
     """Check only dependencies needed for the selected execution mode."""
     if config.dry_run:
         return None
     if not (shutil.which(config.masscan) or Path(config.masscan).is_file()):
         raise RuntimeError(f"masscan executable not found: {config.masscan}")
+    if should_use_sudo(config) and not shutil.which("sudo"):
+        raise RuntimeError("sudo not found; install it or use --no-sudo with a suitably privileged masscan")
     if config.skip_fetch or not config.screenshots:
         return None
     browser = find_browser(config.browser)
     if not browser:
         raise RuntimeError("Chrome/Chromium not found; install it or use --browser/--skip-fetch")
+    if not find_chromedriver():
+        raise RuntimeError("ChromeDriver not found; install chromedriver/chromium-driver or use --skip-fetch")
+    return browser
+
+
+def should_use_sudo(config: AppConfig) -> bool:
+    """Use sudo only for masscan, never for Python or the browser."""
+    return config.use_sudo and hasattr(os, "geteuid") and os.geteuid() != 0
+
+
+def authorize_masscan(config: AppConfig) -> None:
+    """Prompt once before worker threads start; later sudo calls are non-interactive."""
+    if should_use_sudo(config):
+        LOGGER.info("Requesting sudo authorization for masscan")
+        subprocess.run(["sudo", "-v"], check=True)
+
+
+def executable_version(executable: str) -> str:
+    result = subprocess.run([executable, "--version"], check=True, capture_output=True, text=True)
+    return (result.stdout or result.stderr).strip().splitlines()[0]
+
+
+def version_major(version_text: str) -> str | None:
+    for token in version_text.split():
+        if token and token[0].isdigit():
+            return token.split(".", 1)[0]
+    return None
+
+
+def run_precheck(
+    config: AppConfig,
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+    directories: dict[str, Path],
+) -> str | None:
+    """Validate the complete runtime before any network scan starts."""
+    LOGGER.info("Precheck PASS | Masscan Web Scanner %s", __version__)
+    LOGGER.info("Precheck PASS | %d authorized network range(s)", len(networks))
+    LOGGER.info("Precheck PASS | output directory writable: %s", config.output_dir.resolve())
+
+    if config.dry_run:
+        LOGGER.info("Precheck SKIP | runtime executables and sudo are not required for --dry-run")
+        return None
+
+    for module_name in ("requests",):
+        if importlib.util.find_spec(module_name) is None:
+            raise RuntimeError(f"required Python package not installed: {module_name}")
+        LOGGER.info("Precheck PASS | Python package available: %s", module_name)
+
+    browser = require_dependencies(config)
+    LOGGER.info("Precheck PASS | masscan executable: %s", shutil.which(config.masscan) or config.masscan)
+    if should_use_sudo(config):
+        authorize_masscan(config)
+        LOGGER.info("Precheck PASS | sudo authorization for masscan")
+    else:
+        LOGGER.info("Precheck SKIP | sudo disabled or already running with sufficient privileges")
+
+    if not config.screenshots:
+        LOGGER.info("Precheck SKIP | browser checks (screenshots disabled)")
+        return browser
+
+    if importlib.util.find_spec("selenium") is None:
+        raise RuntimeError('required Python package not installed: selenium (install the "screenshots" extra)')
+    LOGGER.info("Precheck PASS | Python package available: selenium")
+    driver = find_chromedriver()
+    browser_version = executable_version(browser or "")
+    driver_version = executable_version(driver or "")
+    LOGGER.info("Precheck PASS | browser: %s", browser_version)
+    LOGGER.info("Precheck PASS | driver: %s", driver_version)
+    browser_major = version_major(browser_version)
+    driver_major = version_major(driver_version)
+    if not browser_major or not driver_major or browser_major != driver_major:
+        raise RuntimeError(f"browser/driver version mismatch: {browser_version!r} vs {driver_version!r}")
+    LOGGER.info("Precheck PASS | browser and driver major version match: %s", browser_major)
     return browser
 
 
@@ -172,6 +278,8 @@ def safe_name(value: str) -> str:
 def run_scan(network: str, index: int, config: AppConfig, output_dir: Path, worker_rate: int) -> Path | None:
     output_file = output_dir / f"range_{index:04d}_{safe_name(network)}.lst"
     command = [config.masscan, network, "-p", config.ports, "--rate", str(worker_rate), "-oL", str(output_file)]
+    if should_use_sudo(config):
+        command = ["sudo", "-n", *command]
     if config.dry_run:
         LOGGER.info("DRY RUN: %s", " ".join(command))
         return None
@@ -211,9 +319,7 @@ def target_url(ip: str, port: int) -> str:
     return f"{scheme}://{host}:{port}"
 
 
-def fetch_target(
-    target: tuple[str, int], html_dir: Path, config: AppConfig, browser_exec: str | None
-) -> tuple[tuple[str, int], bool, str | None]:
+def fetch_target(target: tuple[str, int], html_dir: Path, config: AppConfig, browser_exec: str | None) -> ArchiveResult:
     import requests
 
     ip, port = target
@@ -232,7 +338,6 @@ def fetch_target(
                 stream=True,
                 headers={"User-Agent": "masscan-webscanner/2"},
             ) as response:
-                response.raise_for_status()
                 html_file = host_dir / f"{stem}.html"
                 written = 0
                 with html_file.open("wb") as handle:
@@ -242,18 +347,32 @@ def fetch_target(
                             raise ValueError(f"response exceeds --max-html-bytes={config.max_html_bytes}")
                         handle.write(chunk)
 
-        if config.screenshots and browser_exec:
-            capture_screenshot(url, host_dir / f"{stem}.png", browser_exec, config)
-        return target, True, None
     except Exception as exc:  # Network/browser failures are isolated per target.
-        LOGGER.warning("Could not archive %s: %s", url, exc)
+        LOGGER.warning("Could not archive HTML from %s: %s", url, exc)
         (host_dir / f"{stem}.html").unlink(missing_ok=True)
-        return target, False, str(exc)
+        return ArchiveResult(target=target, html_ok=False, html_error=str(exc))
+
+    if not config.screenshots or not browser_exec:
+        return ArchiveResult(target=target, html_ok=True)
+
+    try:
+        capture_screenshot(url, host_dir / f"{stem}.png", browser_exec, config)
+        return ArchiveResult(target=target, html_ok=True, screenshot_attempted=True, screenshot_ok=True)
+    except Exception as exc:  # A screenshot failure must not remove valid HTML.
+        LOGGER.warning("Could not capture screenshot of %s: %s", url, exc)
+        (host_dir / f"{stem}.png").unlink(missing_ok=True)
+        return ArchiveResult(
+            target=target,
+            html_ok=True,
+            screenshot_attempted=True,
+            screenshot_error=str(exc),
+        )
 
 
 def capture_screenshot(url: str, destination: Path, browser_exec: str, config: AppConfig) -> None:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
 
     options = Options()
     options.binary_location = browser_exec
@@ -262,7 +381,10 @@ def capture_screenshot(url: str, destination: Path, browser_exec: str, config: A
         chrome_arguments.append("--ignore-certificate-errors")
     for option in chrome_arguments:
         options.add_argument(option)
-    driver = webdriver.Chrome(options=options)
+    driver_exec = find_chromedriver()
+    if not driver_exec:
+        raise RuntimeError("ChromeDriver not found")
+    driver = webdriver.Chrome(service=Service(executable_path=driver_exec), options=options)
     try:
         driver.set_page_load_timeout(config.timeout)
         driver.get(url)
@@ -277,19 +399,34 @@ def write_run_summary(
     scan_succeeded: int,
     scan_failed: int,
     targets: set[tuple[str, int]],
-    fetch_attempted: int,
-    fetch_failed: list[tuple[tuple[str, int], str]],
+    archive_results: list[ArchiveResult],
+    fetch_skipped: int,
 ) -> None:
+    html_failures = [result for result in archive_results if not result.html_ok]
+    screenshot_results = [result for result in archive_results if result.screenshot_attempted]
+    screenshot_failures = [result for result in screenshot_results if not result.screenshot_ok]
     payload = {
         "scan_jobs": {"succeeded": scan_succeeded, "failed": scan_failed},
         "endpoints_discovered": len(targets),
         "fetches": {
-            "attempted": fetch_attempted,
-            "succeeded": fetch_attempted - len(fetch_failed),
-            "failed": len(fetch_failed),
-            "skipped": len(targets) - fetch_attempted,
+            "attempted": len(archive_results),
+            "succeeded": len(archive_results) - len(html_failures),
+            "failed": len(html_failures),
+            "skipped": fetch_skipped,
         },
-        "fetch_failures": [{"ip": target[0], "port": target[1], "error": error} for target, error in fetch_failed],
+        "screenshots": {
+            "attempted": len(screenshot_results),
+            "succeeded": len(screenshot_results) - len(screenshot_failures),
+            "failed": len(screenshot_failures),
+            "skipped": len(targets) - len(screenshot_results),
+        },
+        "fetch_failures": [
+            {"ip": result.target[0], "port": result.target[1], "error": result.html_error} for result in html_failures
+        ],
+        "screenshot_failures": [
+            {"ip": result.target[0], "port": result.target[1], "error": result.screenshot_error}
+            for result in screenshot_failures
+        ],
     }
     (root / "run-summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -298,12 +435,12 @@ def run(config: AppConfig) -> int:
     networks = load_ranges(config.ranges_file)
     directories = setup_output(config.output_dir)
     setup_logging(directories["logs"])
-    browser = require_dependencies(config)
+    browser = run_precheck(config, networks, directories)
     expanded = (str(subnet) for network in networks for subnet in expand_network(network, config.max_ipv6_host_bits))
     targets: set[tuple[str, int]] = set()
     scan_succeeded = 0
     scan_failed = 0
-    fetch_failed: list[tuple[tuple[str, int], str]] = []
+    archive_results: list[ArchiveResult] = []
     indexed_networks = enumerate(expanded, 1)
     # Bound each submission batch so broad IPv6 scopes do not create an in-memory
     # future for every subnet. The generator itself remains lazy between batches.
@@ -329,23 +466,27 @@ def run(config: AppConfig) -> int:
                     LOGGER.error("Scan failed for %s: %s", futures[future], exc.stderr or exc)
     if not config.skip_fetch and targets:
         with ThreadPoolExecutor(max_workers=config.fetch_workers) as executor:
-            results = executor.map(lambda target: fetch_target(target, directories["html"], config, browser), targets)
-            fetch_failed = [(target, error or "unknown error") for target, ok, error in results if not ok]
+            archive_results = list(
+                executor.map(lambda target: fetch_target(target, directories["html"], config, browser), targets)
+            )
     write_run_summary(
         config.output_dir,
         scan_succeeded=scan_succeeded,
         scan_failed=scan_failed,
         targets=targets,
-        fetch_attempted=0 if config.skip_fetch else len(targets),
-        fetch_failed=fetch_failed,
+        archive_results=archive_results,
+        fetch_skipped=len(targets) if config.skip_fetch else 0,
     )
+    html_failures = sum(not result.html_ok for result in archive_results)
+    screenshot_failures = sum(result.screenshot_attempted and not result.screenshot_ok for result in archive_results)
     LOGGER.info(
-        "Completed: %d endpoints, %d scan failures, %d fetch failures",
+        "Completed: %d endpoints, %d scan failures, %d fetch failures, %d screenshot failures",
         len(targets),
         scan_failed,
-        len(fetch_failed),
+        html_failures,
+        screenshot_failures,
     )
-    return 1 if scan_failed or fetch_failed else 0
+    return 1 if scan_failed or html_failures or screenshot_failures else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

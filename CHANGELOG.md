@@ -4,6 +4,24 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-08-04
+
+### Added
+
+- Print an automatic precheck before every real scan and stop before sending
+  packets when a required dependency or browser/driver compatibility check fails.
+- Add `--version` and `--no-sudo`.
+- Document Kali/PEP 668 installation, pipx upgrades, the privilege boundary and
+  the complete release verification procedure.
+
+### Changed
+
+- Request sudo authorization once and apply it only to masscan child processes.
+- Use the operating-system ChromeDriver directly instead of Selenium Manager.
+- Archive HTTP 403/404 responses and report HTML-fetch and screenshot outcomes
+  independently in `run-summary.json`.
+- Preserve successfully archived HTML when screenshot capture fails.
+
 ## [2.0.1] - 2026-08-04
 
 ### Changed

@@ -1,5 +1,11 @@
 # Troubleshooting
 
+## `externally-managed-environment`
+
+Kali protects system Python under PEP 668. Do not use
+`--break-system-packages`. Install the wheel with pipx as documented in
+`OPERATIONS.md`.
+
 ## `masscan executable not found`
 
 Install Masscan through the operating system or pass its absolute path with
@@ -11,6 +17,10 @@ Masscan cannot create raw packets with the current privileges. Follow the host's
 approved raw-packet/capability policy. Avoid running Chrome or the complete
 scanner as root.
 
+Start the application normally. Its precheck prompts once for sudo and applies
+that authorization only to masscan. Use `--no-sudo` only for an explicitly
+configured capability or privilege setup.
+
 ## Unexpected interface or source address
 
 Run `masscan --echo` in the same service environment and inspect
@@ -19,13 +29,19 @@ source-port, router-MAC and exclusion settings from that file.
 
 ## Browser not found
 
-Screenshots are optional. Install the `screenshots` extra and Chrome/Chromium,
-pass `--browser /absolute/path`, or omit `--screenshots` to collect HTML only.
-Selenium Manager may need network access to resolve a compatible driver.
+Screenshots are optional. Install Selenium plus Chrome/Chromium and a matching
+ChromeDriver, pass `--browser /absolute/path`, or omit `--screenshots` to collect
+HTML only.
 
 Confirm that browser and driver major versions match. On offline systems, put a
-compatible ChromeDriver on `PATH` before starting the scanner so Selenium
-Manager does not need to download one.
+compatible ChromeDriver on `PATH`. The precheck reports both versions and stops
+before scanning when their major versions differ.
+
+## HTTP 403 and 404
+
+These are reachable HTTP responses and are archived. Connection resets,
+timeouts and remote disconnects remain transport failures. A screenshot failure
+is reported separately and does not remove valid HTML.
 
 ## HTTPS failures
 
@@ -42,7 +58,7 @@ screenshots have a wider network boundary; see `SECURITY.md`.
 
 ## Exit status 1
 
-One or more scan or fetch operations failed while other work continued. Inspect
+One or more scan, fetch or screenshot operations failed while other work continued. Inspect
 `run-summary.json`, `logs/errors.log` and the individual Masscan output files.
 
 ## Large IPv6 scopes

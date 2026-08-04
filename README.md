@@ -17,11 +17,12 @@ scan scope.
 - splits oversized IPv6 networks lazily, avoiding an in-memory subnet list;
 - a global packet-rate limit shared across concurrent scan workers;
 - bounded parallelism and bounded HTML downloads;
-- native masscan execution (no implicit `sudo`); run with the least privileges
-  needed in your environment;
+- one-time interactive `sudo` authorization for masscan while Python and the
+  sandboxed browser remain unprivileged;
 - redirects disabled so HTML retrieval stays on the discovered endpoint;
 - sandboxed Chrome screenshots available as an explicit opt-in;
-- machine-readable run summaries and non-zero status for partial failures;
+- an automatic PASS/SKIP precheck before packets are sent;
+- separate HTML and screenshot results in machine-readable run summaries;
 - deterministic, de-duplicated summaries and IPv6-safe URLs;
 - dry-run and scan-only modes for safe validation and automation;
 - Python package metadata, automated tests, linting and GitHub Actions CI.
@@ -30,11 +31,12 @@ scan scope.
 
 - Python 3.10 or newer;
 - masscan 1.3.2 or a compatible newer build (unless using `--dry-run`);
-- Chrome or Chromium plus the `screenshots` extra when screenshots are enabled.
+- Chrome or Chromium, a matching ChromeDriver and the `screenshots` extra when
+  screenshots are enabled.
 
-A separate ChromeDriver installation is usually unnecessary because Selenium
-Manager resolves a compatible driver. In restricted/offline environments,
-provision browser and driver using your operating-system tooling.
+The scanner uses the operating-system ChromeDriver directly instead of Selenium
+Manager. On Debian/Kali, install the matched `chromium` and `chromium-driver`
+packages together.
 
 The Masscan 1.3.2 CLI and current upstream `master` both support the parameters
 used here: CIDR targets, `-p`, `--rate` and list output via `-oL`. Masscan
@@ -53,17 +55,18 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-For normal use:
+For normal use on Kali/Debian, use pipx so PEP 668 system packages remain
+untouched:
 
 ```bash
-python -m pip install .
+sudo apt install -y pipx
+pipx ensurepath
+pipx install masscan_webscanner-2.0.3-py3-none-any.whl
+pipx inject masscan-webscanner "selenium>=4.18,<5"
+masscan-webscanner --version
 ```
 
-To enable the optional browser screenshot feature:
-
-```bash
-python -m pip install ".[screenshots]"
-```
+Do not use `pip --break-system-packages`.
 
 See [Installation and operations](docs/OPERATIONS.md) for Linux packages,
 permissions, systemd/cron guidance, retention and upgrades.
@@ -81,6 +84,18 @@ Create a text file containing one CIDR per line. Blank lines and text following
 
 ## Usage
 
+A complete screenshot scan uses one unprivileged command. The scanner requests
+sudo authorization once and applies it only to masscan child processes:
+
+```bash
+masscan-webscanner -r helios.txt -p 80,443 --screenshots
+```
+
+Before scanning, the automatic precheck prints PASS/SKIP results for the
+application version, ranges, output path, Python dependencies, masscan, sudo,
+Chromium and ChromeDriver. A failed required check stops the run before packets
+are sent.
+
 Validate a plan without requiring masscan or a browser:
 
 ```bash
@@ -96,6 +111,10 @@ Run the scan but skip HTTP retrieval and screenshots:
 ```bash
 masscan-webscanner -r ranges.txt -p 80,443 --skip-fetch
 ```
+
+Do not prefix the complete command with `sudo`; Chromium must remain
+unprivileged so its sandbox stays enabled. Use `--no-sudo` only when masscan
+already has the required capabilities.
 
 Run scanning and bounded HTML collection:
 
@@ -134,6 +153,7 @@ ambiguous.
 | `--fetch-workers` | `8` | Maximum concurrent archive jobs. |
 | `--max-ipv6-host-bits` | `32` | Largest IPv6 host part per scan job (1–63). |
 | `--masscan` | `masscan` | masscan executable name or path. |
+| `--no-sudo` | off | Run masscan directly instead of requesting sudo authorization. |
 | `--browser` | auto-detected | Chrome/Chromium executable name or path. |
 | `--screenshots` | off | Start Chrome and capture screenshots; may load external resources. |
 | `--verify-tls` | off | Verify HTTPS certificates during HTML retrieval. |
@@ -158,7 +178,10 @@ scan-results/
         └── 192_0_2_10_443.png
 ```
 
-`run-summary.json` records scan/fetch successes and failures for automation.
+`run-summary.json` records scan, HTML-fetch and screenshot results separately.
+A screenshot failure never removes successfully archived HTML. Reachable HTTP
+responses such as 403 and 404 are archived rather than treated as transport
+failures.
 Raw HTML is intentionally stored without rewriting. Treat all scan artifacts as
 untrusted, potentially sensitive data; do not open them with elevated privileges
 or publish the result directory accidentally.
