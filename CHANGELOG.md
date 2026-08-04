@@ -4,6 +4,21 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.5] - 2026-08-04
+
+### Added
+
+- Add independently configurable `--http-timeout` and
+  `--screenshot-timeout` options.
+- Print both effective timeout values during the automatic precheck.
+- Verify installed CLI/package version consistency in CI and release workflows.
+
+### Changed
+
+- Keep the HTTP timeout at 5 seconds and raise the screenshot page-load default
+  to 15 seconds based on observed renderer timeouts in a completed scan.
+- Retain `-t`/`--timeout` as a backward-compatible alias that sets both values.
+
 ## [2.0.4] - 2026-08-04
 
 ### Changed

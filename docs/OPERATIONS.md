@@ -30,7 +30,7 @@ Kali enforces PEP 668. Install the application with pipx instead of using
 ```bash
 sudo apt install -y masscan chromium chromium-driver pipx
 pipx ensurepath
-pipx install --force ./masscan_webscanner-2.0.4-py3-none-any.whl
+pipx install --force ./masscan_webscanner-2.0.5-py3-none-any.whl
 pipx inject --force masscan-webscanner "selenium>=4.18,<5"
 masscan-webscanner --version
 ```
@@ -87,8 +87,24 @@ operating-system ChromeDriver on `PATH`. It reads both version strings and stops
 before scanning unless their major versions match.
 
 The precheck also prints the application version, authorized-range count,
-writable output path, Python dependencies, masscan location and sudo status.
+writable output path, effective HTTP/screenshot timeouts, Python dependencies,
+masscan location and sudo status.
 `--dry-run` intentionally skips runtime executable and sudo requirements.
+
+## Timeouts
+
+The default HTTP timeout is 5 seconds. The default screenshot timeout is 15
+seconds because Chromium must render scripts and page subresources after the
+initial response. Adjust them independently when required:
+
+```bash
+masscan-webscanner -r ranges.txt -p 80,443 --screenshots \
+  --http-timeout 8 \
+  --screenshot-timeout 30
+```
+
+The legacy `-t`/`--timeout` option remains supported and sets both values to the
+same number. Independent options are preferred for new automation.
 
 ## Automation
 

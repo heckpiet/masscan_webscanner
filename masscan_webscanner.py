@@ -21,7 +21,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOGGER = logging.getLogger("masscan_webscanner")
-__version__ = "2.0.4"
+__version__ = "2.0.5"
 DEFAULT_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "chrome")
 DEFAULT_CHROMEDRIVERS = ("chromedriver", "chromium-driver")
 HTTPS_PORTS = frozenset({443, 8443, 9443})
@@ -32,7 +32,8 @@ class AppConfig:
     ranges_file: Path
     ports: str
     output_dir: Path
-    timeout: float = 5.0
+    http_timeout: float = 5.0
+    screenshot_timeout: float = 15.0
     rate: int = 1_000
     scan_workers: int = 4
     fetch_workers: int = 8
@@ -67,7 +68,15 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
     parser.add_argument("--ranges", "-r", required=True, type=Path)
     parser.add_argument("--ports", "-p", required=True, help="masscan port expression, e.g. 80,443,8000-8100")
     parser.add_argument("--output-dir", "-o", type=Path, help="output root (default: timestamped directory)")
-    parser.add_argument("--timeout", "-t", type=float, default=5.0)
+    parser.add_argument("--http-timeout", type=float, default=5.0, help="HTTP request timeout in seconds")
+    parser.add_argument("--screenshot-timeout", type=float, default=15.0, help="browser page-load timeout in seconds")
+    parser.add_argument(
+        "--timeout",
+        "-t",
+        dest="legacy_timeout",
+        type=float,
+        help="set both timeouts to one value (backward-compatible alias)",
+    )
     parser.add_argument("--rate", "-R", type=int, default=1_000, help="global packet rate shared by scan workers")
     parser.add_argument("--scan-workers", type=int, default=4)
     parser.add_argument("--fetch-workers", type=int, default=8)
@@ -88,7 +97,11 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
     parser.add_argument("--dry-run", action="store_true", help="validate and print planned scans only")
     ns = parser.parse_args(argv)
 
-    for name in ("timeout", "rate", "scan_workers", "fetch_workers", "max_html_bytes"):
+    if ns.legacy_timeout is not None:
+        ns.http_timeout = ns.legacy_timeout
+        ns.screenshot_timeout = ns.legacy_timeout
+
+    for name in ("http_timeout", "screenshot_timeout", "rate", "scan_workers", "fetch_workers", "max_html_bytes"):
         if getattr(ns, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be greater than zero")
     if not 1 <= ns.max_ipv6_host_bits <= 63:
@@ -104,7 +117,8 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
         ranges_file=ns.ranges,
         ports=ns.ports,
         output_dir=ns.output_dir or Path(f"Masscan_WebScanner_{timestamp}"),
-        timeout=ns.timeout,
+        http_timeout=ns.http_timeout,
+        screenshot_timeout=ns.screenshot_timeout,
         rate=ns.rate,
         scan_workers=ns.scan_workers,
         fetch_workers=ns.fetch_workers,
@@ -250,6 +264,9 @@ def run_precheck(
     LOGGER.info("Precheck PASS | Masscan Web Scanner %s", __version__)
     LOGGER.info("Precheck PASS | %d authorized network range(s)", len(networks))
     LOGGER.info("Precheck PASS | output directory writable: %s", config.output_dir.resolve())
+    LOGGER.info(
+        "Precheck PASS | timeouts: HTTP %.1fs, screenshot %.1fs", config.http_timeout, config.screenshot_timeout
+    )
 
     if config.dry_run:
         LOGGER.info("Precheck SKIP | runtime executables and sudo are not required for --dry-run")
@@ -349,7 +366,7 @@ def fetch_target(target: tuple[str, int], html_dir: Path, config: AppConfig, bro
             session.trust_env = False
             with session.get(
                 url,
-                timeout=config.timeout,
+                timeout=config.http_timeout,
                 verify=config.verify_tls,
                 allow_redirects=False,
                 stream=True,
@@ -403,7 +420,7 @@ def capture_screenshot(url: str, destination: Path, browser_exec: str, config: A
         raise RuntimeError("ChromeDriver not found")
     driver = webdriver.Chrome(service=Service(executable_path=driver_exec), options=options)
     try:
-        driver.set_page_load_timeout(config.timeout)
+        driver.set_page_load_timeout(config.screenshot_timeout)
         driver.get(url)
         driver.save_screenshot(str(destination))
     finally:

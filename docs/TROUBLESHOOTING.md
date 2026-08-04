@@ -66,6 +66,13 @@ screenshots have a wider network boundary; see `SECURITY.md`.
 One or more scan, fetch or screenshot operations failed while other work continued. Inspect
 `run-summary.json`, `logs/errors.log` and the individual Masscan output files.
 
+## Screenshot renderer timeouts
+
+Chromium pages often need longer than direct HTTP retrieval. The defaults are 5
+seconds for HTTP and 15 seconds for screenshots. Increase only the browser value
+first, for example `--screenshot-timeout 30`. Use `--http-timeout` separately
+when the initial HTTP response itself is slow.
+
 ## Large IPv6 scopes
 
 Subnet generation is lazy but the number of resulting scan jobs may still be
