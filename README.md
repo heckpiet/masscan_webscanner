@@ -1,5 +1,12 @@
 # Masscan Web Scanner
 
+[![CI](https://github.com/heckpiet/masscan_webscanner/actions/workflows/ci.yml/badge.svg)](https://github.com/heckpiet/masscan_webscanner/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/heckpiet/masscan_webscanner?display_name=tag)](https://github.com/heckpiet/masscan_webscanner/releases/latest)
+[![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue)](https://github.com/heckpiet/masscan_webscanner/actions/workflows/ci.yml)
+
+Current release: **2.0.3**. See [CI and releases](docs/CI_CD.md) for the
+quality matrix, package validation and tagged-release workflow.
+
 Masscan Web Scanner scans **explicitly authorized** IPv4/IPv6 networks with
 [masscan](https://github.com/robertdavidgraham/masscan), extracts discovered web
 endpoints and stores bounded raw HTML responses. Browser screenshots are an
