@@ -1,101 +1,173 @@
 # Masscan Web Scanner
 
-High-speed, modularized port scanning with automated HTML fetching and screenshotting for exposed web services.  
-Now supports **IPv6**, **range splitting**, and **parallel execution** across IP spaces.
+Masscan Web Scanner scans **explicitly authorized** IPv4/IPv6 networks with
+[masscan](https://github.com/robertdavidgraham/masscan), extracts discovered web
+endpoints and optionally stores their raw HTML plus a browser screenshot.
 
-This tool is built for security analysts and automation enthusiasts who want not just open ports, but also **visual** and **HTML-based insights** into exposed services — for both IPv4 and IPv6.
+> [!WARNING]
+> Port scanning can disrupt networks and may be unlawful without permission.
+> Only scan systems for which you have explicit written authorization. Start
+> with a conservative `--rate` and comply with the rules of engagement.
 
-> ⚠️ This code was assembled and partially generated with AI assistance. Use at your own risk!
+## Highlights
 
----
+- validates, normalizes and de-duplicates input networks before scanning;
+- splits oversized IPv6 networks lazily, avoiding an in-memory subnet list;
+- bounded parallelism for scans and web requests;
+- native masscan execution (no implicit `sudo`); run with the least privileges
+  needed in your environment;
+- ChromeDriver resolution through Selenium Manager;
+- deterministic, de-duplicated summaries and IPv6-safe URLs;
+- dry-run and scan-only modes for safe validation and automation;
+- Python package metadata, automated tests, linting and GitHub Actions CI.
 
-## 🧭 What it does
+## Requirements
 
-1. **Parallel Masscan scans** across multiple IPv4 and IPv6 ranges.
-2. **Automatic IPv6 range splitting** to bypass Masscan limitations.
-3. **Parses** Masscan output to identify open ports.
-4. **Fetches HTML** and **screenshots** from web services via MechanicalSoup + Selenium.
-5. **Organizes output** into a timestamped directory structure:
-   ```
-   Masscan_WebScanner_YYYYMMDD_HHMMSS/
-   ├── logs/
-   │   ├── masscan.log        # raw scan logs
-   │   └── errors.log         # errors and timeouts
-   ├── output/
-   │   ├── *.lst              # raw scan output
-   │   └── *_summary.txt      # parsed summaries
-   └── html/
-       └── <IP>/              # one directory per IP
-           ├── <IP>_page_<port>_<timestamp>.html
-           └── <IP>_screenshot_<port>_<timestamp>.png
-   ```
+- Python 3.10 or newer;
+- masscan (unless using `--dry-run`);
+- Chrome or Chromium when screenshots are enabled.
 
----
+A separate ChromeDriver installation is usually unnecessary because Selenium
+Manager resolves a compatible driver. In restricted/offline environments,
+provision browser and driver using your operating-system tooling.
 
-## 🚀 Usage
+## Installation
+
+For development, create an isolated environment and install the project:
 
 ```bash
-python3 masscan_webscanner.py \
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+For normal use:
+
+```bash
+python -m pip install .
+```
+
+## Input
+
+Create a text file containing one CIDR per line. Blank lines and text following
+`#` are ignored. Host addresses are accepted and normalized to their network.
+
+```text
+# Only networks included in the signed authorization
+192.0.2.0/28
+2001:db8:1234::/120
+```
+
+## Usage
+
+Validate a plan without requiring masscan or a browser:
+
+```bash
+masscan-webscanner \
   --ranges ranges.txt \
-  --ports 80,443 \
-  [--timeout 3] \
-  [--rate 5000] \
-  [--max-ipv6-bits 32] \
-  [--dry-run]
+  --ports 80,443,8080,8443 \
+  --rate 1000 \
+  --dry-run
 ```
 
-### Parameters
-
-- `--ranges` / `-r`: Path to a file with IP ranges (one per line, supports IPv4 and IPv6)
-- `--ports` / `-p`: Comma-separated list of ports to scan (e.g. `80,443`)
-- `--timeout` / `-t`: Timeout in seconds for page fetch and screenshot (default: `2`)
-- `--rate` / `-R`: Packet rate limit for Masscan (default: `1000`)
-- `--max-ipv6-bits`: Max number of host bits for IPv6 before auto-splitting (default: `32`)
-- `--dry-run`: Simulate scans without executing Masscan
-
----
-
-## 📦 Requirements
-
-- **Python** ≥ 3.8
-- **System tools**:
-  - `masscan` (tested v1.3.2)
-  - `chromium` or `google-chrome`
-  - `chromedriver` matching your browser version
-- **Python packages**:
-  - `mechanicalsoup` ≥ 0.12.0
-  - `selenium` ≥ 4.0.0
-  - `beautifulsoup4` ≥ 4.9.0
-  - `urllib3` ≥ 1.26.0
-
-### Install dependencies
+Run the scan but skip HTTP retrieval and screenshots:
 
 ```bash
-pip install mechanicalsoup selenium beautifulsoup4 urllib3
+masscan-webscanner -r ranges.txt -p 80,443 --skip-fetch
 ```
+
+Run the complete workflow:
 
 ```bash
-sudo apt update && sudo apt install masscan chromium chromium-driver
+masscan-webscanner \
+  -r ranges.txt \
+  -p 80,443,8000-8100 \
+  --output-dir ./scan-results \
+  --timeout 5 \
+  --rate 1000 \
+  --scan-workers 4 \
+  --fetch-workers 8
 ```
 
----
+`Masscan_Webscanner.py` remains as a compatibility entry point. New automation
+should use the installed `masscan-webscanner` command or
+`python -m masscan_webscanner`.
 
-## 📝 Software Bill of Materials (SBOM)
+### Options
 
-| Component         | Version      |
-|------------------|--------------|
-| masscan           | v1.3.2       |
-| chromium/chrome   | system pkg   |
-| chromedriver      | system pkg   |
-| mechanicalsoup    | ≥ 0.12.0     |
-| selenium          | ≥ 4.0.0      |
-| beautifulsoup4    | ≥ 4.9.0      |
-| urllib3           | ≥ 1.26.0     |
+| Option | Default | Purpose |
+| --- | ---: | --- |
+| `-r`, `--ranges` | required | Input file containing authorized CIDRs. |
+| `-p`, `--ports` | required | A masscan port expression. |
+| `-o`, `--output-dir` | timestamped | Root directory for this run. |
+| `-R`, `--rate` | `1000` | Packets per second passed to masscan. |
+| `-t`, `--timeout` | `5` | HTTP and page-load timeout in seconds. |
+| `--scan-workers` | `4` | Maximum concurrent masscan processes. |
+| `--fetch-workers` | `8` | Maximum concurrent archive jobs. |
+| `--max-ipv6-host-bits` | `32` | Largest IPv6 host part per scan job (1–63). |
+| `--masscan` | `masscan` | masscan executable name or path. |
+| `--browser` | auto-detected | Chrome/Chromium executable name or path. |
+| `--skip-fetch` | off | Do not fetch HTML or take screenshots. |
+| `--dry-run` | off | Validate input and log commands without executing them. |
 
----
+## Output
 
-## 💡 Notes
+```text
+scan-results/
+├── logs/
+│   ├── scanner.log
+│   └── errors.log
+├── output/
+│   ├── range_0001_192_0_2_0_28.lst
+│   └── range_0001_192_0_2_0_28_summary.txt
+└── html/
+    └── 192_0_2_10/
+        ├── 192_0_2_10_443.html
+        └── 192_0_2_10_443.png
+```
 
-- IPv6 support requires appropriate system and network configuration.
-- Screenshots are taken with a headless browser; ensure `chromedriver` version matches your browser.
-- Temporary `.lst` files for split ranges are auto-deleted after merging.
+Raw HTML is intentionally stored without rewriting. Treat all scan artifacts as
+untrusted, potentially sensitive data; do not open them with elevated privileges
+or publish the result directory accidentally.
+
+## Architecture
+
+1. `load_ranges` validates and canonicalizes the scope.
+2. `expand_network` lazily divides IPv6 scopes according to the configured cap.
+3. A bounded thread pool invokes independent masscan processes.
+4. `parse_masscan` creates stable summaries and a unique endpoint set.
+5. A second bounded pool retrieves HTML and starts isolated headless browser
+   sessions for screenshots.
+
+A failed scan or web endpoint is logged without cancelling unrelated work. The
+program returns `2` for configuration/dependency errors; individual masscan
+failures are logged and the remaining ranges continue.
+
+## Development and CI
+
+Run the same checks used by GitHub Actions:
+
+```bash
+ruff check .
+python -m pytest
+python -m build
+```
+
+CI tests Python 3.10, 3.12 and 3.13 on pull requests and pushes to the default
+branch. It does not perform real network scans.
+
+## Known limitations
+
+- Port-to-protocol selection is heuristic: ports 443, 8443 and 9443 use HTTPS;
+  other ports use HTTP.
+- Each screenshot starts a browser process. Keep `--fetch-workers` conservative
+  on memory-limited systems.
+- Extremely broad IPv6 scopes can still create an impractical number of scan
+  jobs. Scope scans narrowly even though subnet generation is lazy.
+- masscan privileges and supported IPv6 behavior depend on the operating system
+  and local installation.
+
+## License
+
+GNU General Public License v3.0 only. See [LICENSE](LICENSE).
