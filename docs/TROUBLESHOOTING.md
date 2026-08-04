@@ -50,6 +50,11 @@ private certificate authorities must be available to the Python and browser
 trust stores. Do not disable verification merely to hide an unexpected identity
 or routing problem.
 
+When verification is disabled (the default), repetitive urllib3 certificate
+warning blocks are suppressed. Transport failures are still recorded in
+`logs/errors.log` and `run-summary.json`. With `--verify-tls`, certificate
+validation failures remain visible as endpoint errors.
+
 ## Redirect pages are not followed
 
 This is intentional for HTML retrieval so an authorized IP cannot redirect the

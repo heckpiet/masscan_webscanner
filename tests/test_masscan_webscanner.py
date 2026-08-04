@@ -54,7 +54,7 @@ def test_cli_reports_package_version(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit) as exc_info:
         parse_args(["--version"])
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.0.3"
+    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.0.4"
 
 
 def test_cli_uses_python_310_compatible_utc_timestamp(tmp_path: Path) -> None:
@@ -237,6 +237,32 @@ def test_run_summary_is_machine_readable(tmp_path: Path) -> None:
     assert summary["scan_jobs"] == {"succeeded": 2, "failed": 1}
     assert summary["fetches"] == {"attempted": 1, "succeeded": 0, "failed": 1, "skipped": 0}
     assert summary["screenshots"] == {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 1}
+
+
+def test_console_hides_file_only_endpoint_details(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    scanner.setup_logging(tmp_path)
+    scanner.LOGGER.warning("endpoint detail", extra={"file_only": True})
+    scanner.LOGGER.info("visible progress")
+    for handler in scanner.LOGGER.handlers or scanner.logging.getLogger().handlers:
+        handler.flush()
+    console = capsys.readouterr().err
+    assert "visible progress" in console
+    assert "endpoint detail" not in console
+    assert "endpoint detail" in (tmp_path / "errors.log").read_text()
+
+
+def test_tls_warning_suppression_only_when_verification_is_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import urllib3
+
+    disable_warnings = Mock()
+    monkeypatch.setattr(urllib3, "disable_warnings", disable_warnings)
+    scanner.configure_tls_warnings(AppConfig(tmp_path / "ranges", "443", tmp_path))
+    disable_warnings.assert_called_once()
+    disable_warnings.reset_mock()
+    scanner.configure_tls_warnings(AppConfig(tmp_path / "ranges", "443", tmp_path, verify_tls=True))
+    disable_warnings.assert_not_called()
 
 
 def test_main_returns_configuration_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -21,7 +21,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOGGER = logging.getLogger("masscan_webscanner")
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 DEFAULT_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "chrome")
 DEFAULT_CHROMEDRIVERS = ("chromedriver", "chromium-driver")
 HTTPS_PORTS = frozenset({443, 8443, 9443})
@@ -161,13 +161,30 @@ def setup_output(root: Path) -> dict[str, Path]:
 
 
 def setup_logging(log_dir: Path) -> None:
-    log_format = "%(asctime)s | %(levelname)-8s | %(message)s"
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    class ConsoleFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return not getattr(record, "file_only", False)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter("%(levelname)-7s | %(message)s"))
+    console_handler.addFilter(ConsoleFilter())
     info_handler = RotatingFileHandler(log_dir / "scanner.log", maxBytes=5_000_000, backupCount=3)
     error_handler = RotatingFileHandler(log_dir / "errors.log", maxBytes=1_000_000, backupCount=2)
+    file_formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
+    info_handler.setFormatter(file_formatter)
+    error_handler.setFormatter(file_formatter)
     error_handler.setLevel(logging.WARNING)
-    handlers.extend((info_handler, error_handler))
-    logging.basicConfig(level=logging.INFO, format=log_format, handlers=handlers, force=True)
+    logging.basicConfig(level=logging.INFO, handlers=[console_handler, info_handler, error_handler], force=True)
+
+
+def configure_tls_warnings(config: AppConfig) -> None:
+    if config.verify_tls:
+        return
+    from urllib3 import disable_warnings
+    from urllib3.exceptions import InsecureRequestWarning
+
+    disable_warnings(InsecureRequestWarning)
+    LOGGER.info("TLS certificate verification disabled; repetitive urllib3 warnings suppressed")
 
 
 def find_browser(explicit: str | None = None) -> str | None:
@@ -348,7 +365,7 @@ def fetch_target(target: tuple[str, int], html_dir: Path, config: AppConfig, bro
                         handle.write(chunk)
 
     except Exception as exc:  # Network/browser failures are isolated per target.
-        LOGGER.warning("Could not archive HTML from %s: %s", url, exc)
+        LOGGER.warning("Could not archive HTML from %s: %s", url, exc, extra={"file_only": True})
         (host_dir / f"{stem}.html").unlink(missing_ok=True)
         return ArchiveResult(target=target, html_ok=False, html_error=str(exc))
 
@@ -359,7 +376,7 @@ def fetch_target(target: tuple[str, int], html_dir: Path, config: AppConfig, bro
         capture_screenshot(url, host_dir / f"{stem}.png", browser_exec, config)
         return ArchiveResult(target=target, html_ok=True, screenshot_attempted=True, screenshot_ok=True)
     except Exception as exc:  # A screenshot failure must not remove valid HTML.
-        LOGGER.warning("Could not capture screenshot of %s: %s", url, exc)
+        LOGGER.warning("Could not capture screenshot of %s: %s", url, exc, extra={"file_only": True})
         (host_dir / f"{stem}.png").unlink(missing_ok=True)
         return ArchiveResult(
             target=target,
@@ -436,6 +453,7 @@ def run(config: AppConfig) -> int:
     directories = setup_output(config.output_dir)
     setup_logging(directories["logs"])
     browser = run_precheck(config, networks, directories)
+    configure_tls_warnings(config)
     expanded = (str(subnet) for network in networks for subnet in expand_network(network, config.max_ipv6_host_bits))
     targets: set[tuple[str, int]] = set()
     scan_succeeded = 0
@@ -479,12 +497,21 @@ def run(config: AppConfig) -> int:
     )
     html_failures = sum(not result.html_ok for result in archive_results)
     screenshot_failures = sum(result.screenshot_attempted and not result.screenshot_ok for result in archive_results)
+    LOGGER.info("Result summary")
+    LOGGER.info("  Endpoints discovered : %d", len(targets))
+    LOGGER.info("  Scan failures        : %d", scan_failed)
+    LOGGER.info("  HTML fetch failures  : %d", html_failures)
+    LOGGER.info("  Screenshot failures  : %d", screenshot_failures)
+    if scan_failed or html_failures or screenshot_failures:
+        LOGGER.warning(
+            "Failure details: %s and %s",
+            directories["logs"] / "errors.log",
+            config.output_dir / "run-summary.json",
+        )
     LOGGER.info(
-        "Completed: %d endpoints, %d scan failures, %d fetch failures, %d screenshot failures",
+        "Completed: %d endpoints, %d total failures",
         len(targets),
-        scan_failed,
-        html_failures,
-        screenshot_failures,
+        scan_failed + html_failures + screenshot_failures,
     )
     return 1 if scan_failed or html_failures or screenshot_failures else 0
 
