@@ -30,7 +30,7 @@ Kali enforces PEP 668. Install the application with pipx instead of using
 ```bash
 sudo apt install -y masscan chromium chromium-driver pipx
 pipx ensurepath
-pipx install --force ./masscan_webscanner-2.0.3-py3-none-any.whl
+pipx install --force ./masscan_webscanner-2.0.4-py3-none-any.whl
 pipx inject --force masscan-webscanner "selenium>=4.18,<5"
 masscan-webscanner --version
 ```
@@ -101,6 +101,10 @@ Use the CLI's status codes:
 Each invocation should use its own output directory. Monitor free disk space and
 parse `run-summary.json` rather than relying only on log text. Keep ranges files
 and outputs out of the repository.
+
+The console displays progress and aggregate results. Repetitive endpoint errors
+remain available in `logs/errors.log` and `run-summary.json` without flooding an
+interactive terminal.
 
 For cron or systemd, set an explicit working directory, absolute paths and a
 restrictive umask. Do not embed credentials in unit files or command lines.

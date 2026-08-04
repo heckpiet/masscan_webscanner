@@ -4,6 +4,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-08-04
+
+### Changed
+
+- Keep terminal output compact by moving repetitive per-endpoint HTML and
+  screenshot failures to the existing error log and JSON summary.
+- Suppress repetitive `InsecureRequestWarning` blocks only when TLS certificate
+  verification is intentionally disabled.
+- Print a structured final result summary and direct operators to detailed logs.
+
 ## [2.0.3] - 2026-08-04
 
 ### Added
