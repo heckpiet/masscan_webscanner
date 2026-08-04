@@ -29,12 +29,18 @@ scan scope.
 ## Requirements
 
 - Python 3.10 or newer;
-- masscan (unless using `--dry-run`);
+- masscan 1.3.2 or a compatible newer build (unless using `--dry-run`);
 - Chrome or Chromium plus the `screenshots` extra when screenshots are enabled.
 
 A separate ChromeDriver installation is usually unnecessary because Selenium
 Manager resolves a compatible driver. In restricted/offline environments,
 provision browser and driver using your operating-system tooling.
+
+The Masscan 1.3.2 CLI and current upstream `master` both support the parameters
+used here: CIDR targets, `-p`, `--rate` and list output via `-oL`. Masscan
+supports IPv4 and IPv6 simultaneously and does not use a separate `-6` switch.
+This application supports TCP ports only; UDP expressions such as `U:53` are
+rejected because the archive stage uses HTTP/TCP.
 
 ## Installation
 
@@ -120,7 +126,7 @@ ambiguous.
 | Option | Default | Purpose |
 | --- | ---: | --- |
 | `-r`, `--ranges` | required | Input file containing authorized CIDRs. |
-| `-p`, `--ports` | required | A masscan port expression. |
+| `-p`, `--ports` | required | A TCP-only masscan port expression. |
 | `-o`, `--output-dir` | timestamped | Root directory for this run. |
 | `-R`, `--rate` | `1000` | Global packet rate shared by active masscan workers. |
 | `-t`, `--timeout` | `5` | HTTP and page-load timeout in seconds. |
@@ -197,6 +203,8 @@ not perform real network scans. See [CI and releases](docs/CI_CD.md).
   jobs. Scope scans narrowly even though subnet generation is lazy.
 - masscan privileges and supported IPv6 behavior depend on the operating system
   and local installation.
+- Masscan loads `/etc/masscan/masscan.conf` when present. Review system-wide
+  interface, source-address and exclusion settings before automated scans.
 
 ## License
 

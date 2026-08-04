@@ -68,6 +68,8 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
             parser.error(f"--{name.replace('_', '-')} must be greater than zero")
     if not 1 <= ns.max_ipv6_host_bits <= 63:
         parser.error("--max-ipv6-host-bits must be between 1 and 63")
+    if "U:" in ns.ports.upper():
+        parser.error("UDP port expressions are not supported; web retrieval requires TCP")
 
     if ns.skip_fetch and ns.screenshots:
         parser.error("--screenshots cannot be combined with --skip-fetch")
@@ -183,6 +185,9 @@ def parse_masscan(list_file: Path, summary_dir: Path) -> list[tuple[str, int]]:
     for line in list_file.read_text(encoding="utf-8").splitlines():
         parts = line.split()
         if len(parts) >= 4 and parts[0] == "open":
+            if parts[1].lower() != "tcp":
+                LOGGER.warning("Ignoring non-TCP masscan line: %s", line)
+                continue
             try:
                 targets.add((str(ipaddress.ip_address(parts[3])), int(parts[2].split("/", 1)[0])))
             except ValueError:

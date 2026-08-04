@@ -11,11 +11,21 @@ Masscan cannot create raw packets with the current privileges. Follow the host's
 approved raw-packet/capability policy. Avoid running Chrome or the complete
 scanner as root.
 
+## Unexpected interface or source address
+
+Run `masscan --echo` in the same service environment and inspect
+`/etc/masscan/masscan.conf`. Masscan can inherit adapter, source-address,
+source-port, router-MAC and exclusion settings from that file.
+
 ## Browser not found
 
 Screenshots are optional. Install the `screenshots` extra and Chrome/Chromium,
 pass `--browser /absolute/path`, or omit `--screenshots` to collect HTML only.
 Selenium Manager may need network access to resolve a compatible driver.
+
+Confirm that browser and driver major versions match. On offline systems, put a
+compatible ChromeDriver on `PATH` before starting the scanner so Selenium
+Manager does not need to download one.
 
 ## HTTPS failures
 
