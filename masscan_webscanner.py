@@ -6,15 +6,15 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import itertools
+import json
 import logging
 import shutil
 import subprocess
 import sys
-import warnings
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -35,35 +35,44 @@ class AppConfig:
     max_ipv6_host_bits: int = 32
     dry_run: bool = False
     skip_fetch: bool = False
+    screenshots: bool = False
+    verify_tls: bool = False
+    max_html_bytes: int = 5_000_000
     masscan: str = "masscan"
     browser: str | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
-    parser = argparse.ArgumentParser(
-        description="Scan authorized IP ranges and archive discovered web services."
-    )
+    parser = argparse.ArgumentParser(description="Scan authorized IP ranges and archive discovered web services.")
     parser.add_argument("--ranges", "-r", required=True, type=Path)
     parser.add_argument("--ports", "-p", required=True, help="masscan port expression, e.g. 80,443,8000-8100")
     parser.add_argument("--output-dir", "-o", type=Path, help="output root (default: timestamped directory)")
     parser.add_argument("--timeout", "-t", type=float, default=5.0)
-    parser.add_argument("--rate", "-R", type=int, default=1_000)
+    parser.add_argument("--rate", "-R", type=int, default=1_000, help="global packet rate shared by scan workers")
     parser.add_argument("--scan-workers", type=int, default=4)
     parser.add_argument("--fetch-workers", type=int, default=8)
     parser.add_argument("--max-ipv6-host-bits", "--max-ipv6-bits", dest="max_ipv6_host_bits", type=int, default=32)
     parser.add_argument("--masscan", default="masscan", help="masscan executable path")
     parser.add_argument("--browser", help="Chrome/Chromium executable path")
     parser.add_argument("--skip-fetch", action="store_true", help="only scan and create summaries")
+    parser.add_argument(
+        "--screenshots", action="store_true", help="opt in to browser screenshots (may load external resources)"
+    )
+    parser.add_argument("--verify-tls", action="store_true", help="verify HTTPS certificates while fetching HTML")
+    parser.add_argument("--max-html-bytes", type=int, default=5_000_000, help="maximum HTML bytes stored per endpoint")
     parser.add_argument("--dry-run", action="store_true", help="validate and print planned scans only")
     ns = parser.parse_args(argv)
 
-    for name in ("timeout", "rate", "scan_workers", "fetch_workers"):
+    for name in ("timeout", "rate", "scan_workers", "fetch_workers", "max_html_bytes"):
         if getattr(ns, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be greater than zero")
     if not 1 <= ns.max_ipv6_host_bits <= 63:
         parser.error("--max-ipv6-host-bits must be between 1 and 63")
 
-    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    if ns.skip_fetch and ns.screenshots:
+        parser.error("--screenshots cannot be combined with --skip-fetch")
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     return AppConfig(
         ranges_file=ns.ranges,
         ports=ns.ports,
@@ -75,6 +84,9 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
         max_ipv6_host_bits=ns.max_ipv6_host_bits,
         dry_run=ns.dry_run,
         skip_fetch=ns.skip_fetch,
+        screenshots=ns.screenshots,
+        verify_tls=ns.verify_tls,
+        max_html_bytes=ns.max_html_bytes,
         masscan=ns.masscan,
         browser=ns.browser,
     )
@@ -143,7 +155,7 @@ def require_dependencies(config: AppConfig) -> str | None:
         return None
     if not (shutil.which(config.masscan) or Path(config.masscan).is_file()):
         raise RuntimeError(f"masscan executable not found: {config.masscan}")
-    if config.skip_fetch:
+    if config.skip_fetch or not config.screenshots:
         return None
     browser = find_browser(config.browser)
     if not browser:
@@ -155,9 +167,9 @@ def safe_name(value: str) -> str:
     return value.replace(".", "_").replace(":", "_").replace("/", "_")
 
 
-def run_scan(network: str, index: int, config: AppConfig, output_dir: Path) -> Path | None:
+def run_scan(network: str, index: int, config: AppConfig, output_dir: Path, worker_rate: int) -> Path | None:
     output_file = output_dir / f"range_{index:04d}_{safe_name(network)}.lst"
-    command = [config.masscan, network, "-p", config.ports, "--rate", str(config.rate), "-oL", str(output_file)]
+    command = [config.masscan, network, "-p", config.ports, "--rate", str(worker_rate), "-oL", str(output_file)]
     if config.dry_run:
         LOGGER.info("DRY RUN: %s", " ".join(command))
         return None
@@ -194,52 +206,87 @@ def target_url(ip: str, port: int) -> str:
     return f"{scheme}://{host}:{port}"
 
 
-def fetch_target(target: tuple[str, int], html_dir: Path, browser_exec: str, timeout: float) -> None:
-    # Imports stay local so validation, dry runs and scan-only mode do not require
-    # the comparatively heavy browser stack to be initialized.
-    import mechanicalsoup
-    import urllib3
-    from bs4 import XMLParsedAsHTMLWarning
-    from selenium import webdriver
-    from selenium.common.exceptions import TimeoutException
-    from selenium.webdriver.chrome.options import Options
+def fetch_target(
+    target: tuple[str, int], html_dir: Path, config: AppConfig, browser_exec: str | None
+) -> tuple[tuple[str, int], bool, str | None]:
+    import requests
 
-    warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     ip, port = target
     url = target_url(ip, port)
     host_dir = html_dir / safe_name(ip)
     host_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{safe_name(ip)}_{port}"
     try:
-        browser = mechanicalsoup.StatefulBrowser(user_agent="masscan-webscanner/2")
-        browser.session.verify = False
-        response = browser.open(url, timeout=timeout)
-        response.raise_for_status()
-        (host_dir / f"{stem}.html").write_bytes(response.content)
+        with requests.Session() as session:
+            session.trust_env = False
+            with session.get(
+                url,
+                timeout=config.timeout,
+                verify=config.verify_tls,
+                allow_redirects=False,
+                stream=True,
+                headers={"User-Agent": "masscan-webscanner/2"},
+            ) as response:
+                response.raise_for_status()
+                html_file = host_dir / f"{stem}.html"
+                written = 0
+                with html_file.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=65_536):
+                        written += len(chunk)
+                        if written > config.max_html_bytes:
+                            raise ValueError(f"response exceeds --max-html-bytes={config.max_html_bytes}")
+                        handle.write(chunk)
 
-        options = Options()
-        options.binary_location = browser_exec
-        chrome_arguments = (
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--ignore-certificate-errors",
-            "--window-size=1920,1080",
-        )
-        for option in chrome_arguments:
-            options.add_argument(option)
-        driver = webdriver.Chrome(options=options)  # Selenium Manager resolves the driver.
-        try:
-            driver.set_page_load_timeout(timeout)
-            driver.get(url)
-            driver.save_screenshot(str(host_dir / f"{stem}.png"))
-        finally:
-            driver.quit()
-    except TimeoutException:
-        LOGGER.warning("Timeout fetching %s", url)
+        if config.screenshots and browser_exec:
+            capture_screenshot(url, host_dir / f"{stem}.png", browser_exec, config)
+        return target, True, None
     except Exception as exc:  # Network/browser failures are isolated per target.
         LOGGER.warning("Could not archive %s: %s", url, exc)
+        (host_dir / f"{stem}.html").unlink(missing_ok=True)
+        return target, False, str(exc)
+
+
+def capture_screenshot(url: str, destination: Path, browser_exec: str, config: AppConfig) -> None:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+
+    options = Options()
+    options.binary_location = browser_exec
+    chrome_arguments = ["--headless=new", "--disable-gpu", "--window-size=1920,1080"]
+    if not config.verify_tls:
+        chrome_arguments.append("--ignore-certificate-errors")
+    for option in chrome_arguments:
+        options.add_argument(option)
+    driver = webdriver.Chrome(options=options)
+    try:
+        driver.set_page_load_timeout(config.timeout)
+        driver.get(url)
+        driver.save_screenshot(str(destination))
+    finally:
+        driver.quit()
+
+
+def write_run_summary(
+    root: Path,
+    *,
+    scan_succeeded: int,
+    scan_failed: int,
+    targets: set[tuple[str, int]],
+    fetch_attempted: int,
+    fetch_failed: list[tuple[tuple[str, int], str]],
+) -> None:
+    payload = {
+        "scan_jobs": {"succeeded": scan_succeeded, "failed": scan_failed},
+        "endpoints_discovered": len(targets),
+        "fetches": {
+            "attempted": fetch_attempted,
+            "succeeded": fetch_attempted - len(fetch_failed),
+            "failed": len(fetch_failed),
+            "skipped": len(targets) - fetch_attempted,
+        },
+        "fetch_failures": [{"ip": target[0], "port": target[1], "error": error} for target, error in fetch_failed],
+    }
+    (root / "run-summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def run(config: AppConfig) -> int:
@@ -247,19 +294,23 @@ def run(config: AppConfig) -> int:
     directories = setup_output(config.output_dir)
     setup_logging(directories["logs"])
     browser = require_dependencies(config)
-    expanded = (
-        str(subnet)
-        for network in networks
-        for subnet in expand_network(network, config.max_ipv6_host_bits)
-    )
+    expanded = (str(subnet) for network in networks for subnet in expand_network(network, config.max_ipv6_host_bits))
     targets: set[tuple[str, int]] = set()
+    scan_succeeded = 0
+    scan_failed = 0
+    fetch_failed: list[tuple[tuple[str, int], str]] = []
     indexed_networks = enumerate(expanded, 1)
     # Bound each submission batch so broad IPv6 scopes do not create an in-memory
     # future for every subnet. The generator itself remains lazy between batches.
     while batch := list(itertools.islice(indexed_networks, config.scan_workers * 4)):
-        with ThreadPoolExecutor(max_workers=config.scan_workers) as executor:
+        active_workers = min(config.scan_workers, len(batch), config.rate)
+        worker_rate = max(1, config.rate // active_workers)
+        LOGGER.info(
+            "Scan batch: %d workers at %d packets/s each (global limit %d)", active_workers, worker_rate, config.rate
+        )
+        with ThreadPoolExecutor(max_workers=active_workers) as executor:
             futures = {
-                executor.submit(run_scan, network, index, config, directories["output"]): network
+                executor.submit(run_scan, network, index, config, directories["output"], worker_rate): network
                 for index, network in batch
             }
             for future in as_completed(futures):
@@ -267,18 +318,29 @@ def run(config: AppConfig) -> int:
                     output_file = future.result()
                     if output_file:
                         targets.update(parse_masscan(output_file, directories["output"]))
+                        scan_succeeded += 1
                 except subprocess.CalledProcessError as exc:
+                    scan_failed += 1
                     LOGGER.error("Scan failed for %s: %s", futures[future], exc.stderr or exc)
-    if browser and targets:
+    if not config.skip_fetch and targets:
         with ThreadPoolExecutor(max_workers=config.fetch_workers) as executor:
-            list(
-                executor.map(
-                    lambda target: fetch_target(target, directories["html"], browser, config.timeout),
-                    targets,
-                )
-            )
-    LOGGER.info("Completed: %d unique web endpoints discovered", len(targets))
-    return 0
+            results = executor.map(lambda target: fetch_target(target, directories["html"], config, browser), targets)
+            fetch_failed = [(target, error or "unknown error") for target, ok, error in results if not ok]
+    write_run_summary(
+        config.output_dir,
+        scan_succeeded=scan_succeeded,
+        scan_failed=scan_failed,
+        targets=targets,
+        fetch_attempted=0 if config.skip_fetch else len(targets),
+        fetch_failed=fetch_failed,
+    )
+    LOGGER.info(
+        "Completed: %d endpoints, %d scan failures, %d fetch failures",
+        len(targets),
+        scan_failed,
+        len(fetch_failed),
+    )
+    return 1 if scan_failed or fetch_failed else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
