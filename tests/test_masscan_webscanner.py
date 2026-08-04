@@ -60,6 +60,17 @@ def test_cli_rejects_screenshots_with_skip_fetch(tmp_path: Path) -> None:
         parse_args(["-r", str(tmp_path / "ranges"), "-p", "80", "--screenshots", "--skip-fetch"])
 
 
+def test_cli_rejects_udp_port_expressions(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["-r", str(tmp_path / "ranges"), "-p", "U:53,T:80"])
+
+
+def test_parse_masscan_ignores_non_tcp_results(tmp_path: Path) -> None:
+    result = tmp_path / "result.lst"
+    result.write_text("open udp 53 192.0.2.1 0\nopen tcp 80 192.0.2.1 0\n")
+    assert parse_masscan(result, tmp_path) == [("192.0.2.1", 80)]
+
+
 def test_run_scan_shares_explicit_worker_rate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = AppConfig(tmp_path / "ranges", "80", tmp_path, dry_run=True, rate=1000)
     assert scanner.run_scan("192.0.2.0/24", 1, config, tmp_path, 250) is None

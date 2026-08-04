@@ -22,12 +22,32 @@ sudo apt install chromium
 Distribution package names differ. Confirm the packaged masscan and Chromium
 versions against the distribution's supported repositories.
 
+Verify the actual toolchain before the first run:
+
+```bash
+masscan --version
+python3 --version
+/opt/masscan-webscanner/venv/bin/python -m pip check
+/opt/masscan-webscanner/venv/bin/masscan-webscanner --help
+```
+
+Masscan 1.3.2 is the latest tagged upstream release and is the compatibility
+baseline. The upstream repository remains active. The scanner uses only stable
+options present in 1.3.2 and current upstream: CIDR targets, `-p`, `--rate` and
+`-oL`. Do not use Masscan UDP expressions; this application archives TCP web
+services only.
+
 ## Privileges
 
 Masscan needs raw-packet privileges. Prefer a dedicated service account and the
 smallest mechanism supported by the host. Do not run the complete Python process
 or browser as root merely to satisfy masscan. If capabilities or a privileged
 wrapper are used, document and review that boundary locally.
+
+Masscan automatically reads `/etc/masscan/masscan.conf`. Inspect it for adapter,
+source IP/port, router MAC and exclusion settings. Command-line range, port,
+rate and output arguments from this application take precedence, while other
+system-wide settings can still affect routing and packet transmission.
 
 The service account needs write access only to its output directory. A typical
 starting point is mode `0700` for the root output directory and `0600` for
@@ -44,6 +64,11 @@ artifacts, adjusted to the authorized operator group.
 
 `--rate` is global. The scanner divides it across active Masscan processes, so
 raising `--scan-workers` does not intentionally multiply the configured rate.
+
+Selenium 4.6 and newer ships Selenium Manager. With screenshots enabled it can
+resolve/download a matching driver into its cache. Restricted or offline hosts
+must provision a compatible ChromeDriver themselves and make it available on
+`PATH`; allow outbound access only if automated driver resolution is intended.
 
 ## Automation
 

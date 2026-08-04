@@ -4,6 +4,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Document the verified Masscan 1.3.2/current-master CLI contract and current
+  Python/browser toolchain requirements.
+- Reject UDP port expressions and ignore non-TCP Masscan result lines because
+  the archive stage supports HTTP over TCP only.
+
 ## [2.0.0] - 2026-08-04
 
 ### Changed
