@@ -54,7 +54,36 @@ def test_cli_reports_package_version(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit) as exc_info:
         parse_args(["--version"])
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.0.4"
+    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.0.5"
+
+
+def test_cli_uses_separate_timeout_defaults(tmp_path: Path) -> None:
+    config = parse_args(["-r", str(tmp_path / "ranges"), "-p", "80"])
+    assert config.http_timeout == 5.0
+    assert config.screenshot_timeout == 15.0
+
+
+def test_cli_accepts_independent_timeouts(tmp_path: Path) -> None:
+    config = parse_args(
+        [
+            "-r",
+            str(tmp_path / "ranges"),
+            "-p",
+            "80",
+            "--http-timeout",
+            "7",
+            "--screenshot-timeout",
+            "20",
+        ]
+    )
+    assert config.http_timeout == 7.0
+    assert config.screenshot_timeout == 20.0
+
+
+def test_legacy_timeout_sets_both_values(tmp_path: Path) -> None:
+    config = parse_args(["-r", str(tmp_path / "ranges"), "-p", "80", "--timeout", "9"])
+    assert config.http_timeout == 9.0
+    assert config.screenshot_timeout == 9.0
 
 
 def test_cli_uses_python_310_compatible_utc_timestamp(tmp_path: Path) -> None:
@@ -188,6 +217,7 @@ def test_fetch_does_not_follow_redirects(tmp_path: Path, monkeypatch: pytest.Mon
     result = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, None)
     assert result == scanner.ArchiveResult(("192.0.2.1", 80), html_ok=True)
     assert session.get.call_args.kwargs["allow_redirects"] is False
+    assert session.get.call_args.kwargs["timeout"] == 5.0
     assert session.trust_env is False
     assert (tmp_path / "192_0_2_1" / "192_0_2_1_80.html").read_bytes() == b"hello"
 
@@ -355,4 +385,5 @@ def test_capture_screenshot_keeps_chrome_sandbox_enabled(tmp_path: Path, monkeyp
     service = webdriver.Chrome.call_args.kwargs["service"]
     assert service.path == "/usr/bin/chromedriver"
     assert "--no-sandbox" not in options.arguments
+    driver.set_page_load_timeout.assert_called_once_with(15.0)
     driver.quit.assert_called_once()

@@ -4,7 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/heckpiet/masscan_webscanner?display_name=tag)](https://github.com/heckpiet/masscan_webscanner/releases/latest)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue)](https://github.com/heckpiet/masscan_webscanner/actions/workflows/ci.yml)
 
-Current release: **2.0.4**. See [CI and releases](docs/CI_CD.md) for the
+Current release: **2.0.5**. See [CI and releases](docs/CI_CD.md) for the
 quality matrix, package validation and tagged-release workflow.
 
 Masscan Web Scanner scans **explicitly authorized** IPv4/IPv6 networks with
@@ -68,7 +68,7 @@ untouched:
 ```bash
 sudo apt install -y pipx
 pipx ensurepath
-pipx install masscan_webscanner-2.0.4-py3-none-any.whl
+pipx install masscan_webscanner-2.0.5-py3-none-any.whl
 pipx inject masscan-webscanner "selenium>=4.18,<5"
 masscan-webscanner --version
 ```
@@ -130,7 +130,8 @@ masscan-webscanner \
   -r ranges.txt \
   -p 80,443,8000-8100 \
   --output-dir ./scan-results \
-  --timeout 5 \
+  --http-timeout 5 \
+  --screenshot-timeout 15 \
   --rate 1000 \
   --scan-workers 4 \
   --fetch-workers 8
@@ -155,7 +156,9 @@ ambiguous.
 | `-p`, `--ports` | required | A TCP-only masscan port expression. |
 | `-o`, `--output-dir` | timestamped | Root directory for this run. |
 | `-R`, `--rate` | `1000` | Global packet rate shared by active masscan workers. |
-| `-t`, `--timeout` | `5` | HTTP and page-load timeout in seconds. |
+| `--http-timeout` | `5` | HTTP request timeout in seconds. |
+| `--screenshot-timeout` | `15` | Chromium page-load timeout in seconds. |
+| `-t`, `--timeout` | unset | Backward-compatible alias that sets both timeouts. |
 | `--scan-workers` | `4` | Maximum concurrent masscan processes. |
 | `--fetch-workers` | `8` | Maximum concurrent archive jobs. |
 | `--max-ipv6-host-bits` | `32` | Largest IPv6 host part per scan job (1–63). |
@@ -193,6 +196,14 @@ failures.
 The console intentionally stays compact. Repetitive per-endpoint errors are
 written to `logs/errors.log` and `run-summary.json`, while the terminal shows a
 short final summary and the paths to those details.
+
+HTTP and screenshot timeouts are independent because a streamed HTTP response
+usually starts quickly, while Chromium may need longer to render scripts and
+subresources. The defaults are 5 and 15 seconds respectively. For slower pages:
+
+```bash
+masscan-webscanner -r ranges.txt -p 80,443 --screenshots --screenshot-timeout 30
+```
 Raw HTML is intentionally stored without rewriting. Treat all scan artifacts as
 untrusted, potentially sensitive data; do not open them with elevated privileges
 or publish the result directory accidentally.
