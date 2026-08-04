@@ -4,6 +4,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-04
+
 ### Changed
 
 - Document the verified Masscan 1.3.2/current-master CLI contract and current
