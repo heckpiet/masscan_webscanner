@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 LOGGER = logging.getLogger("masscan_webscanner")
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 DEFAULT_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "chrome")
 DEFAULT_CHROMEDRIVERS = ("chromedriver", "chromium-driver")
 HTTPS_PORTS = frozenset({443, 8443, 9443})
@@ -1207,6 +1207,7 @@ def run(config: AppConfig) -> int:
     )
     html_failures = sum(not result.html_ok for result in archive_results)
     screenshot_failures = sum(result.screenshot_attempted and not result.screenshot_ok for result in archive_results)
+    report_html_path = (config.output_dir / "report.html").resolve()
     LOGGER.info("Result summary")
     LOGGER.info("  Authorized ranges    : %d", len(networks))
     if excludes:
@@ -1215,6 +1216,8 @@ def run(config: AppConfig) -> int:
     LOGGER.info("  Scan failures        : %d", scan_failed)
     LOGGER.info("  HTML fetch failures  : %d", html_failures)
     LOGGER.info("  Screenshot failures  : %d", screenshot_failures)
+    LOGGER.info("  HTML report          : %s", report_html_path)
+    LOGGER.info("  HTML report URI      : %s", report_html_path.as_uri())
     if scan_failed or html_failures or screenshot_failures:
         LOGGER.warning(
             "Failure details: %s and %s",
@@ -1226,6 +1229,7 @@ def run(config: AppConfig) -> int:
         len(targets),
         scan_failed + html_failures + screenshot_failures,
     )
+    LOGGER.info("HTML report overview : %s", report_html_path.as_uri())
     return 1 if scan_failed or html_failures or screenshot_failures else 0
 
 

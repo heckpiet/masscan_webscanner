@@ -73,7 +73,7 @@ def test_cli_reports_package_version(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit) as exc_info:
         parse_args(["--version"])
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.2.0"
+    assert capsys.readouterr().out.strip() == f"masscan-webscanner {scanner.__version__}"
 
 
 def test_cli_uses_separate_timeout_defaults(tmp_path: Path) -> None:
@@ -544,6 +544,7 @@ def test_dry_run_with_excludes_writes_exclude_file_and_summary(tmp_path: Path, m
     assert summary["ranges"]["authorized"] == 1
     assert summary["ranges"]["excluded"] == 2
     assert summary["excluded_cidrs"] == ["192.168.1.1/32", "192.168.1.254/32"]
+    assert (output / "report.html").is_file()
 
 
 def test_extract_title_variants() -> None:

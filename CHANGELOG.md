@@ -4,6 +4,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-04
+
+### Added
+
+- Output direct path and clickable `file://` URI to `report.html` upon scan completion and in the result summary for instant one-click dashboard access from modern terminals.
+
 ## [2.2.0] - 2026-09-04
 
 ### Added
