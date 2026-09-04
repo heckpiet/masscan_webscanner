@@ -121,7 +121,7 @@ A complete screenshot scan uses one unprivileged command. The scanner requests
 sudo authorization once and applies it only to masscan child processes:
 
 ```bash
-masscan-webscanner -r helios.txt -p 80,443 --screenshots
+masscan-webscanner -r targets.txt -p 80,443 --screenshots
 ```
 
 Before scanning, the automatic precheck prints PASS/SKIP results for the
