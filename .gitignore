@@ -14,3 +14,11 @@ Masscan_WebScanner_*/
 output/
 html/
 logs/
+report.html
+endpoints.csv
+run-summary.json
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
