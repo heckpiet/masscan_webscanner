@@ -4,7 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/heckpiet/masscan_webscanner?display_name=tag)](https://github.com/heckpiet/masscan_webscanner/releases/latest)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue)](https://github.com/heckpiet/masscan_webscanner/actions/workflows/ci.yml)
 
-Current release: **2.1.0**. See [CI and releases](docs/CI_CD.md) for the
+Current release: **2.2.0**. See [CI and releases](docs/CI_CD.md) for the
 quality matrix, package validation and tagged-release workflow.
 
 Masscan Web Scanner scans **explicitly authorized** IPv4/IPv6 networks with
@@ -22,7 +22,10 @@ scan scope.
 
 - validates, normalizes and de-duplicates input networks and optional exclusions before scanning;
 - supports optional inline exclusions (individual IPs or subnets) via `!`, `-`, or `exclude `;
+- supports dedicated exclusion files (`--exclude-file` / `-e`) and command-line exclusion flags (`--exclude`);
 - applies defense-in-depth: passes exclusions to masscan via `--excludefile` to prevent SYN transmission and filters results in Python before archiving;
+- automatic HTTP/HTTPS protocol fallback when non-standard ports or TLS mismatches occur;
+- generates an interactive, offline-capable HTML report (`report.html`) and structured CSV export (`endpoints.csv`) with status codes, page titles, and server banners;
 - splits oversized IPv6 networks lazily, avoiding an in-memory subnet list;
 - a global packet-rate limit shared across concurrent scan workers;
 - bounded parallelism and bounded HTML downloads;
@@ -70,7 +73,7 @@ untouched:
 ```bash
 sudo apt install -y pipx
 pipx ensurepath
-pipx install masscan_webscanner-2.1.0-py3-none-any.whl
+pipx install masscan_webscanner-2.2.0-py3-none-any.whl
 pipx inject masscan-webscanner "selenium>=4.18,<5"
 masscan-webscanner --version
 ```
@@ -179,6 +182,8 @@ ambiguous.
 | `-p`, `--ports` | required | A TCP-only masscan port expression. |
 | `-o`, `--output-dir` | timestamped | Root directory for this run. |
 | `-R`, `--rate` | `1000` | Global packet rate shared by active masscan workers. |
+| `-e`, `--exclude-file` | unset | File containing additional excluded IPs or CIDRs. |
+| `--exclude` | unset | Exclude a specific IP or CIDR (can be passed multiple times). |
 | `--http-timeout` | `5` | HTTP request timeout in seconds. |
 | `--screenshot-timeout` | `15` | Chromium page-load timeout in seconds. |
 | `-t`, `--timeout` | unset | Backward-compatible alias that sets both timeouts. |
@@ -199,6 +204,8 @@ ambiguous.
 ```text
 scan-results/
 ├── run-summary.json
+├── report.html
+├── endpoints.csv
 ├── logs/
 │   ├── scanner.log
 │   └── errors.log
@@ -211,7 +218,10 @@ scan-results/
         └── 192_0_2_10_443.png
 ```
 
-`run-summary.json` records scan, HTML-fetch and screenshot results separately.
+- `report.html`: Standalone, interactive HTML report with live filtering, response metadata badges, and screenshot lightbox (100% offline, zero CDN dependencies).
+- `endpoints.csv`: Flat CSV export with IP, port, scheme, status code, page title, server banner, and content length for easy analysis in spreadsheet software or SIEM tools.
+- `run-summary.json`: Complete JSON summary recording scan jobs, ranges, discovered endpoints, HTTP fetch status, and screenshot results.
+
 A screenshot failure never removes successfully archived HTML. Reachable HTTP
 responses such as 403 and 404 are archived rather than treated as transport
 failures.
@@ -233,14 +243,15 @@ or publish the result directory accidentally.
 
 ## Architecture
 
-1. `load_ranges` validates and canonicalizes the scope (target networks and optional exclusions).
+1. `load_ranges` validates and canonicalizes the scope (target networks and optional exclusions from file and CLI).
 2. `expand_network` lazily divides IPv6 scopes according to the configured cap.
 3. If exclusions are defined, an `exclude.lst` file is generated and passed to masscan via `--excludefile`.
 4. A bounded thread pool invokes independent masscan processes.
 5. `parse_masscan` discards any excluded addresses (safety net), creates stable summaries and a unique endpoint set.
-6. A second bounded pool streams HTML without following redirects and enforces
-   a per-response size limit.
-7. With `--screenshots`, sandboxed headless browser sessions capture images.
+6. A second bounded pool probes web endpoints, automatically handles HTTP/HTTPS fallback, and streams HTML without following redirects.
+7. Discovered metadata (status code, title, server banner) is parsed.
+8. With `--screenshots`, sandboxed headless browser sessions capture images with optimized stability flags.
+9. Structured `run-summary.json`, `endpoints.csv`, and visual dashboard `report.html` are generated.
 
 A failed scan or web endpoint is logged without cancelling unrelated work. Exit
 status `0` means success, `1` means at least one scan or fetch failed, and `2`
@@ -263,8 +274,7 @@ not perform real network scans. See [CI and releases](docs/CI_CD.md).
 
 ## Known limitations
 
-- Port-to-protocol selection is heuristic: ports 443, 8443 and 9443 use HTTPS;
-  other ports use HTTP.
+- Port-to-protocol selection uses smart fallback: ports 443, 8443 and 9443 default to HTTPS, other ports default to HTTP; automatic fallback retries the opposite protocol on TLS errors or HTTP 400 HTTPS mismatches.
 - Screenshots can load redirects or page subresources outside the input ranges;
   enable them only when the authorization permits this browser traffic.
 - Each screenshot starts a browser process. Keep `--fetch-workers` conservative.

@@ -4,6 +4,27 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-04
+
+### Added
+
+- Automatic HTTP/HTTPS protocol fallback:
+  - Smart initial scheme heuristic with automatic fallback retry on TLS/SSL errors (`WRONG_VERSION_NUMBER`, handshake errors) or HTTP 400 "The plain HTTP request was sent to HTTPS port" responses.
+  - Automatically captures screenshots and links using the negotiated scheme.
+- Rich HTTP metadata extraction:
+  - Extract and store HTTP status code, page `<title>`, `Server` banner, `Location` redirect header, `Content-Type`, and response size.
+  - Structured endpoint data in `run-summary.json`.
+- Visual HTML dashboard (`report.html`):
+  - Standalone, interactive HTML report with summary metric cards, instant search across IP/port/title/server/status, status filter pills, and screenshot previews.
+  - 100% self-contained and pentest-ready (offline, zero external CDN dependencies).
+- Flat CSV export (`endpoints.csv`):
+  - Export discovered endpoints and metadata to CSV for easy import into SIEM, Excel, or penetration testing reports.
+- Dedicated CLI exclusion options:
+  - `--exclude-file` (`-e`) to pass a separate exclusion list file.
+  - `--exclude` to exclude specific IPs or CIDRs directly via the CLI.
+- Chrome stability flags:
+  - Added `--disable-dev-shm-usage`, `--disable-extensions`, and `--disable-notifications` for headless container and Linux stability.
+
 ## [2.1.0] - 2026-09-04
 
 ### Added

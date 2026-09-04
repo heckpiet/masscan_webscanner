@@ -9,12 +9,16 @@ import pytest
 import masscan_webscanner as scanner
 from masscan_webscanner import (
     AppConfig,
+    ArchiveResult,
     TargetScope,
     expand_network,
+    extract_title,
     load_ranges,
     parse_args,
     parse_masscan,
     target_url,
+    write_endpoints_csv,
+    write_html_report,
 )
 
 
@@ -69,7 +73,7 @@ def test_cli_reports_package_version(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit) as exc_info:
         parse_args(["--version"])
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.1.0"
+    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.2.0"
 
 
 def test_cli_uses_separate_timeout_defaults(tmp_path: Path) -> None:
@@ -230,7 +234,13 @@ def test_fetch_does_not_follow_redirects(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr("requests.Session", Mock(return_value=session))
     config = AppConfig(tmp_path / "ranges", "80", tmp_path)
     result = scanner.fetch_target(("192.0.2.1", 80), tmp_path, config, None)
-    assert result == scanner.ArchiveResult(("192.0.2.1", 80), html_ok=True)
+    assert result == scanner.ArchiveResult(
+        ("192.0.2.1", 80),
+        html_ok=True,
+        scheme="http",
+        status_code=200,
+        content_length=5,
+    )
     assert session.get.call_args.kwargs["allow_redirects"] is False
     assert session.get.call_args.kwargs["timeout"] == 5.0
     assert session.trust_env is False
@@ -534,3 +544,241 @@ def test_dry_run_with_excludes_writes_exclude_file_and_summary(tmp_path: Path, m
     assert summary["ranges"]["authorized"] == 1
     assert summary["ranges"]["excluded"] == 2
     assert summary["excluded_cidrs"] == ["192.168.1.1/32", "192.168.1.254/32"]
+
+
+def test_extract_title_variants() -> None:
+    assert extract_title(b"<html><head><title>Welcome to Test</title></head></html>") == "Welcome to Test"
+    assert extract_title(b"<title>\n &lt;Admin&gt; &amp; Dashboard \n</title>") == "<Admin> & Dashboard"
+    assert extract_title(b"<html><body><h1>No Title</h1></body></html>") is None
+    long_raw = b"<title>" + b"A" * 300 + b"</title>"
+    extracted = extract_title(long_raw)
+    assert extracted is not None
+    assert len(extracted) == 200
+    assert extracted == "A" * 200
+
+
+def test_target_url_supports_scheme_override() -> None:
+    assert target_url("192.0.2.1", 80, scheme="https") == "https://192.0.2.1:80"
+    assert target_url("192.0.2.1", 443, scheme="http") == "http://192.0.2.1:443"
+    assert target_url("2001:db8::1", 8080, scheme="https") == "https://[2001:db8::1]:8080"
+
+
+def test_cli_parses_exclude_file_and_cli_excludes(tmp_path: Path) -> None:
+    ranges = tmp_path / "ranges.txt"
+    ranges.write_text("10.0.0.0/8\n")
+    ex_file = tmp_path / "ex.txt"
+    ex_file.write_text("10.1.0.0/16\n")
+    config = parse_args(
+        [
+            "-r",
+            str(ranges),
+            "-p",
+            "80",
+            "--exclude-file",
+            str(ex_file),
+            "--exclude",
+            "10.2.0.0/16",
+            "--exclude",
+            "10.3.0.1",
+        ]
+    )
+    assert config.exclude_file == ex_file
+    assert config.cli_excludes == ("10.2.0.0/16", "10.3.0.1")
+
+
+def test_cli_rejects_missing_exclude_file(tmp_path: Path) -> None:
+    ranges = tmp_path / "ranges.txt"
+    ranges.write_text("10.0.0.0/8\n")
+    missing = tmp_path / "does_not_exist.txt"
+    with pytest.raises(SystemExit):
+        parse_args(["-r", str(ranges), "-p", "80", "--exclude-file", str(missing)])
+
+
+def test_load_ranges_merges_exclude_file_and_cli(tmp_path: Path) -> None:
+    ranges = tmp_path / "ranges.txt"
+    ranges.write_text("192.168.0.0/16\n!192.168.1.1\n")
+    ex_file = tmp_path / "excludes.txt"
+    ex_file.write_text("192.168.2.0/24\n192.168.3.1\n")
+    scope = load_ranges(ranges, exclude_file=ex_file, cli_excludes=["192.168.4.0/24", "192.168.1.1"])
+    target_strs = [str(n) for n in scope.targets]
+    exclude_strs = [str(n) for n in scope.excludes]
+    assert target_strs == ["192.168.0.0/16"]
+    assert "192.168.1.1/32" in exclude_strs
+    assert "192.168.2.0/24" in exclude_strs
+    assert "192.168.3.1/32" in exclude_strs
+    assert "192.168.4.0/24" in exclude_strs
+    # deduplicated
+    assert exclude_strs.count("192.168.1.1/32") == 1
+
+
+def test_write_endpoints_csv(tmp_path: Path) -> None:
+    dest = tmp_path / "endpoints.csv"
+    results = [
+        ArchiveResult(
+            target=("192.168.1.10", 80),
+            html_ok=True,
+            scheme="http",
+            status_code=200,
+            title="Gateway Login",
+            server="nginx/1.24",
+            redirect_location=None,
+            content_type="text/html",
+            content_length=1234,
+        ),
+        ArchiveResult(
+            target=("192.168.1.20", 8443),
+            html_ok=False,
+            html_error="Connection refused",
+            scheme="https",
+        ),
+    ]
+    write_endpoints_csv(dest, results)
+    assert dest.is_file()
+    lines = dest.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == (
+        "ip,port,scheme,url,status_code,title,server,redirect_location,content_type,"
+        "content_length,html_ok,screenshot_ok,html_error,screenshot_error"
+    )
+    assert "192.168.1.10,80,http,http://192.168.1.10:80,200,Gateway Login,nginx/1.24" in lines[1]
+    assert "192.168.1.20,8443,https,https://192.168.1.20:8443,,,," in lines[2]
+    assert "Connection refused" in lines[2]
+
+
+def test_write_html_report_and_run_summary(tmp_path: Path) -> None:
+    report = tmp_path / "report.html"
+    results = [
+        ArchiveResult(
+            target=("192.168.1.10", 443),
+            html_ok=True,
+            screenshot_attempted=True,
+            screenshot_ok=True,
+            scheme="https",
+            status_code=200,
+            title="Secure Portal",
+            server="Apache/2.4",
+            content_type="text/html",
+            content_length=4567,
+        )
+    ]
+    summary = {
+        "scan_jobs": {"succeeded": 1, "failed": 0},
+        "ranges": {"authorized": 1, "excluded": 0},
+        "fetches": {"succeeded": 1, "failed": 0},
+        "screenshots": {"succeeded": 1, "failed": 0},
+    }
+    write_html_report(report, results, summary)
+    assert report.is_file()
+    content = report.read_text(encoding="utf-8")
+    assert "Masscan Webscanner" in content
+    assert "Secure Portal" in content
+    assert "192.168.1.10:443" in content
+    assert "Apache/2.4" in content
+    assert "endpoints.csv" in content
+
+
+def test_fetch_target_fallback_from_http_to_https(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests
+
+    call_urls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, content: bytes, headers: dict[str, str]) -> None:
+            self.status_code = status_code
+            self._content = content
+            self.headers = headers
+
+        def iter_content(self, chunk_size: int = 65536):
+            yield self._content
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get(self, url: str, **kwargs: object) -> FakeResponse:
+            call_urls.append(url)
+            if url.startswith("http://"):
+                return FakeResponse(
+                    400,
+                    b"<html><body>The plain HTTP request was sent to HTTPS port</body></html>",
+                    {},
+                )
+            return FakeResponse(
+                200,
+                b"<html><head><title>HTTPS Portal</title></head><body>Secure</body></html>",
+                {"Server": "nginx/custom", "Content-Type": "text/html"},
+            )
+
+    monkeypatch.setattr(requests, "Session", FakeSession)
+    config = AppConfig(tmp_path / "ranges", "8080", tmp_path, screenshots=False)
+    result = scanner.fetch_target(("192.0.2.1", 8080), tmp_path, config, browser_exec=None)
+
+    assert result.html_ok is True
+    assert result.scheme == "https"
+    assert result.status_code == 200
+    assert result.title == "HTTPS Portal"
+    assert result.server == "nginx/custom"
+    assert call_urls == ["http://192.0.2.1:8080", "https://192.0.2.1:8080"]
+
+
+def test_fetch_target_fallback_from_https_to_http_on_ssl_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests
+
+    call_urls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, content: bytes, headers: dict[str, str]) -> None:
+            self.status_code = status_code
+            self._content = content
+            self.headers = headers
+
+        def iter_content(self, chunk_size: int = 65536):
+            yield self._content
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get(self, url: str, **kwargs: object) -> FakeResponse:
+            call_urls.append(url)
+            if url.startswith("https://"):
+                raise requests.exceptions.SSLError("WRONG_VERSION_NUMBER")
+            return FakeResponse(
+                200,
+                b"<html><head><title>Plain HTTP</title></head><body>Plain</body></html>",
+                {"Server": "lighttpd", "Content-Type": "text/html"},
+            )
+
+    monkeypatch.setattr(requests, "Session", FakeSession)
+    config = AppConfig(tmp_path / "ranges", "443", tmp_path, screenshots=False)
+    result = scanner.fetch_target(("192.0.2.1", 443), tmp_path, config, browser_exec=None)
+
+    assert result.html_ok is True
+    assert result.scheme == "http"
+    assert result.status_code == 200
+    assert result.title == "Plain HTTP"
+    assert result.server == "lighttpd"
+    assert call_urls == ["https://192.0.2.1:443", "http://192.0.2.1:443"]
