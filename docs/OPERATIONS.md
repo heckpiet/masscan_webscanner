@@ -30,7 +30,7 @@ Kali enforces PEP 668. Install the application with pipx instead of using
 ```bash
 sudo apt install -y masscan chromium chromium-driver pipx
 pipx ensurepath
-pipx install --force ./masscan_webscanner-2.1.0-py3-none-any.whl
+pipx install --force ./masscan_webscanner-2.2.0-py3-none-any.whl
 pipx inject --force masscan-webscanner "selenium>=4.18,<5"
 masscan-webscanner --version
 ```
