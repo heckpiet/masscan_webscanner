@@ -4,7 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/heckpiet/masscan_webscanner?display_name=tag)](https://github.com/heckpiet/masscan_webscanner/releases/latest)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue)](https://github.com/heckpiet/masscan_webscanner/actions/workflows/ci.yml)
 
-Current release: **2.0.5**. See [CI and releases](docs/CI_CD.md) for the
+Current release: **2.1.0**. See [CI and releases](docs/CI_CD.md) for the
 quality matrix, package validation and tagged-release workflow.
 
 Masscan Web Scanner scans **explicitly authorized** IPv4/IPv6 networks with
@@ -20,7 +20,9 @@ scan scope.
 
 ## Highlights
 
-- validates, normalizes and de-duplicates input networks before scanning;
+- validates, normalizes and de-duplicates input networks and optional exclusions before scanning;
+- supports optional inline exclusions (individual IPs or subnets) via `!`, `-`, or `exclude `;
+- applies defense-in-depth: passes exclusions to masscan via `--excludefile` to prevent SYN transmission and filters results in Python before archiving;
 - splits oversized IPv6 networks lazily, avoiding an in-memory subnet list;
 - a global packet-rate limit shared across concurrent scan workers;
 - bounded parallelism and bounded HTML downloads;
@@ -46,8 +48,8 @@ Manager. On Debian/Kali, install the matched `chromium` and `chromium-driver`
 packages together.
 
 The Masscan 1.3.2 CLI and current upstream `master` both support the parameters
-used here: CIDR targets, `-p`, `--rate` and list output via `-oL`. Masscan
-supports IPv4 and IPv6 simultaneously and does not use a separate `-6` switch.
+used here: CIDR targets, `-p`, `--rate`, `--excludefile` and list output via `-oL`.
+Masscan supports IPv4 and IPv6 simultaneously and does not use a separate `-6` switch.
 This application supports TCP ports only; UDP expressions such as `U:53` are
 rejected because the archive stage uses HTTP/TCP.
 
@@ -68,7 +70,7 @@ untouched:
 ```bash
 sudo apt install -y pipx
 pipx ensurepath
-pipx install masscan_webscanner-2.0.5-py3-none-any.whl
+pipx install masscan_webscanner-2.1.0-py3-none-any.whl
 pipx inject masscan-webscanner "selenium>=4.18,<5"
 masscan-webscanner --version
 ```
@@ -83,11 +85,32 @@ permissions, systemd/cron guidance, retention and upgrades.
 Create a text file containing one CIDR per line. Blank lines and text following
 `#` are ignored. Host addresses are accepted and normalized to their network.
 
+Target files containing only IP ranges work without changes. You can optionally
+exclude specific individual IPs or subnets directly in the same file.
+
 ```text
-# Only networks included in the signed authorization
-192.0.2.0/28
-2001:db8:1234::/120
+# Authorized target networks
+192.0.2.0/24
+2001:db8:1234::/64
+
+# Exclude individual IPs (host addresses are normalized to /32 or /128)
+!192.0.2.1
+!192.0.2.254
+!2001:db8:1234::1
+
+# Exclude subnets / sub-ranges
+!192.0.2.128/28
+!2001:db8:1234:ffff::/112
+
+# Alternative optional exclusion prefixes:
+# -192.0.2.5
+# exclude 192.0.2.6
+# exclude: 192.0.2.100
 ```
+
+When exclusions are present:
+- masscan is invoked with `--excludefile` so no probe packets are sent to excluded hosts;
+- `parse_masscan` additionally verifies and discards any excluded addresses before HTTP retrieval or screenshots.
 
 ## Usage
 
@@ -210,13 +233,14 @@ or publish the result directory accidentally.
 
 ## Architecture
 
-1. `load_ranges` validates and canonicalizes the scope.
+1. `load_ranges` validates and canonicalizes the scope (target networks and optional exclusions).
 2. `expand_network` lazily divides IPv6 scopes according to the configured cap.
-3. A bounded thread pool invokes independent masscan processes.
-4. `parse_masscan` creates stable summaries and a unique endpoint set.
-5. A second bounded pool streams HTML without following redirects and enforces
+3. If exclusions are defined, an `exclude.lst` file is generated and passed to masscan via `--excludefile`.
+4. A bounded thread pool invokes independent masscan processes.
+5. `parse_masscan` discards any excluded addresses (safety net), creates stable summaries and a unique endpoint set.
+6. A second bounded pool streams HTML without following redirects and enforces
    a per-response size limit.
-6. With `--screenshots`, sandboxed headless browser sessions capture images.
+7. With `--screenshots`, sandboxed headless browser sessions capture images.
 
 A failed scan or web endpoint is logged without cancelling unrelated work. Exit
 status `0` means success, `1` means at least one scan or fetch failed, and `2`

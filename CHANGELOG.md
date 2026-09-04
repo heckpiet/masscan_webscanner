@@ -4,6 +4,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-04
+
+### Added
+
+- Support optional inline IP and subnet exclusions in target ranges files:
+  - Exclusion lines starting with `!` (e.g. `!192.168.1.1` or `!10.0.99.0/24`), `-`, or `exclude `/`exclude:`.
+  - Single host addresses are automatically normalized to `/32` or `/128`.
+  - Exclusions are completely optional; files containing only target ranges continue to work unchanged.
+- Generate an `exclude.lst` file and pass it to masscan via `--excludefile` so excluded hosts are not probed at the network level.
+- Defense-in-depth: `parse_masscan` filters out any excluded addresses in Python before attempting HTTP retrieval or screenshots.
+- Report excluded target count during precheck and in `run-summary.json` (`ranges.excluded` and `excluded_cidrs`).
+
 ## [2.0.5] - 2026-08-04
 
 ### Added
