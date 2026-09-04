@@ -30,7 +30,7 @@ Kali enforces PEP 668. Install the application with pipx instead of using
 ```bash
 sudo apt install -y masscan chromium chromium-driver pipx
 pipx ensurepath
-pipx install --force ./masscan_webscanner-2.0.5-py3-none-any.whl
+pipx install --force ./masscan_webscanner-2.1.0-py3-none-any.whl
 pipx inject --force masscan-webscanner "selenium>=4.18,<5"
 masscan-webscanner --version
 ```
@@ -48,9 +48,9 @@ python3 --version
 
 Masscan 1.3.2 is the latest tagged upstream release and is the compatibility
 baseline. The upstream repository remains active. The scanner uses only stable
-options present in 1.3.2 and current upstream: CIDR targets, `-p`, `--rate` and
-`-oL`. Do not use Masscan UDP expressions; this application archives TCP web
-services only.
+options present in 1.3.2 and current upstream: CIDR targets, `-p`, `--rate`,
+`--excludefile` and `-oL`. Do not use Masscan UDP expressions; this application
+archives TCP web services only.
 
 ## Privileges
 
@@ -72,7 +72,7 @@ artifacts, adjusted to the authorized operator group.
 
 ## Safe rollout
 
-1. Put only signed, authorized CIDRs in the ranges file.
+1. Put only signed, authorized CIDRs in the ranges file (and specify any excluded IPs/subnets with `!`).
 2. Run `--dry-run` and review every generated command.
 3. Start with `--scan-workers 1 --rate 100`.
 4. Run with `--skip-fetch` before enabling HTML collection.
@@ -87,8 +87,9 @@ operating-system ChromeDriver on `PATH`. It reads both version strings and stops
 before scanning unless their major versions match.
 
 The precheck also prints the application version, authorized-range count,
-writable output path, effective HTTP/screenshot timeouts, Python dependencies,
-masscan location and sudo status.
+excluded-target count (when exclusions are configured), writable output path,
+effective HTTP/screenshot timeouts, Python dependencies, masscan location and
+sudo status.
 `--dry-run` intentionally skips runtime executable and sudo requirements.
 
 ## Timeouts

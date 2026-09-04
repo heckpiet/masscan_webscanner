@@ -19,12 +19,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import NamedTuple
 
 LOGGER = logging.getLogger("masscan_webscanner")
-__version__ = "2.0.5"
+__version__ = "2.1.0"
 DEFAULT_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "chrome")
 DEFAULT_CHROMEDRIVERS = ("chromedriver", "chromium-driver")
 HTTPS_PORTS = frozenset({443, 8443, 9443})
+
+
+class TargetScope(NamedTuple):
+    targets: list[ipaddress.IPv4Network | ipaddress.IPv6Network]
+    excludes: list[ipaddress.IPv4Network | ipaddress.IPv6Network]
 
 
 @dataclass(frozen=True)
@@ -134,27 +140,67 @@ def parse_args(argv: Sequence[str] | None = None) -> AppConfig:
     )
 
 
-def load_ranges(path: Path) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    """Read, validate and de-duplicate CIDRs; comments and blank lines are ignored."""
+def parse_range_line(raw_line: str) -> tuple[bool, str]:
+    """Parse a single line from a ranges file into (is_exclude, clean_value)."""
+    value = raw_line.split("#", 1)[0].strip()
+    if not value:
+        return False, ""
+    if value.startswith("!"):
+        return True, value[1:].strip()
+    if value.startswith("-"):
+        return True, value[1:].strip()
+    lower = value.lower()
+    if lower.startswith("exclude:"):
+        return True, value[len("exclude:") :].strip()
+    if lower.startswith("exclude ") or lower.startswith("exclude\t"):
+        return True, value[len("exclude") :].strip()
+    return False, value
+
+
+def is_excluded(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    excluded_networks: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> bool:
+    """Return True if ip falls within any excluded network."""
+    return any(ip.version == network.version and ip in network for network in excluded_networks)
+
+
+def load_ranges(path: Path) -> TargetScope:
+    """Read, validate and de-duplicate target and optional exclude networks.
+
+    Comments and blank lines are ignored.
+    Exclusions start with '!', '-', or 'exclude:'/'exclude '.
+    Individual host IPs are normalized to /32 or /128.
+    """
     if not path.is_file():
         raise ValueError(f"ranges file does not exist: {path}")
-    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-    seen: set[str] = set()
+    targets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    excludes: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    seen_targets: set[str] = set()
+    seen_excludes: set[str] = set()
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        value = raw_line.split("#", 1)[0].strip()
+        is_exclude, value = parse_range_line(raw_line)
         if not value:
+            if is_exclude:
+                raise ValueError(f"{path}:{line_number}: missing address in exclusion entry {raw_line.strip()!r}")
             continue
         try:
             network = ipaddress.ip_network(value, strict=False)
         except ValueError as exc:
-            raise ValueError(f"{path}:{line_number}: invalid network {value!r}: {exc}") from exc
+            kind = "excluded network" if is_exclude else "network"
+            raise ValueError(f"{path}:{line_number}: invalid {kind} {value!r}: {exc}") from exc
         canonical = str(network)
-        if canonical not in seen:
-            networks.append(network)
-            seen.add(canonical)
-    if not networks:
-        raise ValueError(f"ranges file contains no networks: {path}")
-    return networks
+        if is_exclude:
+            if canonical not in seen_excludes:
+                excludes.append(network)
+                seen_excludes.add(canonical)
+        else:
+            if canonical not in seen_targets:
+                targets.append(network)
+                seen_targets.add(canonical)
+    if not targets:
+        raise ValueError(f"ranges file contains no target networks: {path}")
+    return TargetScope(targets=targets, excludes=excludes)
 
 
 def expand_network(
@@ -259,10 +305,13 @@ def run_precheck(
     config: AppConfig,
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
     directories: dict[str, Path],
+    excludes: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network] = (),
 ) -> str | None:
     """Validate the complete runtime before any network scan starts."""
     LOGGER.info("Precheck PASS | Masscan Web Scanner %s", __version__)
     LOGGER.info("Precheck PASS | %d authorized network range(s)", len(networks))
+    if excludes:
+        LOGGER.info("Precheck PASS | %d excluded target range(s)", len(excludes))
     LOGGER.info("Precheck PASS | output directory writable: %s", config.output_dir.resolve())
     LOGGER.info(
         "Precheck PASS | timeouts: HTTP %.1fs, screenshot %.1fs", config.http_timeout, config.screenshot_timeout
@@ -309,9 +358,19 @@ def safe_name(value: str) -> str:
     return value.replace(".", "_").replace(":", "_").replace("/", "_")
 
 
-def run_scan(network: str, index: int, config: AppConfig, output_dir: Path, worker_rate: int) -> Path | None:
+def run_scan(
+    network: str,
+    index: int,
+    config: AppConfig,
+    output_dir: Path,
+    worker_rate: int,
+    exclude_file: Path | None = None,
+) -> Path | None:
     output_file = output_dir / f"range_{index:04d}_{safe_name(network)}.lst"
-    command = [config.masscan, network, "-p", config.ports, "--rate", str(worker_rate), "-oL", str(output_file)]
+    command = [config.masscan, network, "-p", config.ports, "--rate", str(worker_rate)]
+    if exclude_file:
+        command.extend(["--excludefile", str(exclude_file)])
+    command.extend(["-oL", str(output_file)])
     if should_use_sudo(config):
         command = ["sudo", "-n", *command]
     if config.dry_run:
@@ -322,7 +381,11 @@ def run_scan(network: str, index: int, config: AppConfig, output_dir: Path, work
     return output_file
 
 
-def parse_masscan(list_file: Path, summary_dir: Path) -> list[tuple[str, int]]:
+def parse_masscan(
+    list_file: Path,
+    summary_dir: Path,
+    excludes: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network] = (),
+) -> list[tuple[str, int]]:
     targets: set[tuple[str, int]] = set()
     for line in list_file.read_text(encoding="utf-8").splitlines():
         parts = line.split()
@@ -331,7 +394,11 @@ def parse_masscan(list_file: Path, summary_dir: Path) -> list[tuple[str, int]]:
                 LOGGER.warning("Ignoring non-TCP masscan line: %s", line)
                 continue
             try:
-                targets.add((str(ipaddress.ip_address(parts[3])), int(parts[2].split("/", 1)[0])))
+                ip_obj = ipaddress.ip_address(parts[3])
+                if is_excluded(ip_obj, excludes):
+                    LOGGER.warning("Ignoring masscan result for excluded IP: %s", parts[3])
+                    continue
+                targets.add((str(ip_obj), int(parts[2].split("/", 1)[0])))
             except ValueError:
                 LOGGER.warning("Ignoring malformed masscan line: %s", line)
     ordered = sorted(
@@ -435,12 +502,19 @@ def write_run_summary(
     targets: set[tuple[str, int]],
     archive_results: list[ArchiveResult],
     fetch_skipped: int,
+    authorized_ranges: int = 0,
+    excluded_ranges: int = 0,
+    excluded_cidrs: Sequence[str] = (),
 ) -> None:
     html_failures = [result for result in archive_results if not result.html_ok]
     screenshot_results = [result for result in archive_results if result.screenshot_attempted]
     screenshot_failures = [result for result in screenshot_results if not result.screenshot_ok]
     payload = {
         "scan_jobs": {"succeeded": scan_succeeded, "failed": scan_failed},
+        "ranges": {
+            "authorized": authorized_ranges,
+            "excluded": excluded_ranges,
+        },
         "endpoints_discovered": len(targets),
         "fetches": {
             "attempted": len(archive_results),
@@ -461,16 +535,23 @@ def write_run_summary(
             {"ip": result.target[0], "port": result.target[1], "error": result.screenshot_error}
             for result in screenshot_failures
         ],
+        "excluded_cidrs": list(excluded_cidrs),
     }
     (root / "run-summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def run(config: AppConfig) -> int:
-    networks = load_ranges(config.ranges_file)
+    scope = load_ranges(config.ranges_file)
+    networks = scope.targets
+    excludes = scope.excludes
     directories = setup_output(config.output_dir)
     setup_logging(directories["logs"])
-    browser = run_precheck(config, networks, directories)
+    browser = run_precheck(config, networks, directories, excludes=excludes)
     configure_tls_warnings(config)
+    exclude_file: Path | None = None
+    if excludes:
+        exclude_file = directories["output"] / "exclude.lst"
+        exclude_file.write_text("".join(f"{net}\n" for net in excludes), encoding="utf-8")
     expanded = (str(subnet) for network in networks for subnet in expand_network(network, config.max_ipv6_host_bits))
     targets: set[tuple[str, int]] = set()
     scan_succeeded = 0
@@ -486,15 +567,23 @@ def run(config: AppConfig) -> int:
             "Scan batch: %d workers at %d packets/s each (global limit %d)", active_workers, worker_rate, config.rate
         )
         with ThreadPoolExecutor(max_workers=active_workers) as executor:
-            futures = {
-                executor.submit(run_scan, network, index, config, directories["output"], worker_rate): network
-                for index, network in batch
-            }
+            if exclude_file:
+                futures = {
+                    executor.submit(
+                        run_scan, network, index, config, directories["output"], worker_rate, exclude_file
+                    ): network
+                    for index, network in batch
+                }
+            else:
+                futures = {
+                    executor.submit(run_scan, network, index, config, directories["output"], worker_rate): network
+                    for index, network in batch
+                }
             for future in as_completed(futures):
                 try:
                     output_file = future.result()
                     if output_file:
-                        targets.update(parse_masscan(output_file, directories["output"]))
+                        targets.update(parse_masscan(output_file, directories["output"], excludes=excludes))
                         scan_succeeded += 1
                 except subprocess.CalledProcessError as exc:
                     scan_failed += 1
@@ -511,10 +600,16 @@ def run(config: AppConfig) -> int:
         targets=targets,
         archive_results=archive_results,
         fetch_skipped=len(targets) if config.skip_fetch else 0,
+        authorized_ranges=len(networks),
+        excluded_ranges=len(excludes),
+        excluded_cidrs=[str(net) for net in excludes],
     )
     html_failures = sum(not result.html_ok for result in archive_results)
     screenshot_failures = sum(result.screenshot_attempted and not result.screenshot_ok for result in archive_results)
     LOGGER.info("Result summary")
+    LOGGER.info("  Authorized ranges    : %d", len(networks))
+    if excludes:
+        LOGGER.info("  Excluded ranges      : %d", len(excludes))
     LOGGER.info("  Endpoints discovered : %d", len(targets))
     LOGGER.info("  Scan failures        : %d", scan_failed)
     LOGGER.info("  HTML fetch failures  : %d", html_failures)

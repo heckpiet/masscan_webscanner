@@ -7,13 +7,28 @@ from unittest.mock import Mock
 import pytest
 
 import masscan_webscanner as scanner
-from masscan_webscanner import AppConfig, expand_network, load_ranges, parse_args, parse_masscan, target_url
+from masscan_webscanner import (
+    AppConfig,
+    TargetScope,
+    expand_network,
+    load_ranges,
+    parse_args,
+    parse_masscan,
+    target_url,
+)
 
 
 def test_load_ranges_ignores_comments_deduplicates_and_normalizes(tmp_path: Path) -> None:
     source = tmp_path / "ranges.txt"
     source.write_text("# approved\n192.0.2.10/24\n192.0.2.0/24 # duplicate\n2001:db8::/126\n")
-    assert [str(item) for item in load_ranges(source)] == ["192.0.2.0/24", "2001:db8::/126"]
+    scope = load_ranges(source)
+    assert isinstance(scope, TargetScope)
+    assert [str(item) for item in scope.targets] == ["192.0.2.0/24", "2001:db8::/126"]
+    assert scope.excludes == []
+    # Test tuple unpacking compatibility
+    targets, excludes = scope
+    assert len(targets) == 2
+    assert excludes == []
 
 
 def test_load_ranges_reports_line_number(tmp_path: Path) -> None:
@@ -54,7 +69,7 @@ def test_cli_reports_package_version(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit) as exc_info:
         parse_args(["--version"])
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.0.5"
+    assert capsys.readouterr().out.strip() == "masscan-webscanner 2.1.0"
 
 
 def test_cli_uses_separate_timeout_defaults(tmp_path: Path) -> None:
@@ -387,3 +402,135 @@ def test_capture_screenshot_keeps_chrome_sandbox_enabled(tmp_path: Path, monkeyp
     assert "--no-sandbox" not in options.arguments
     driver.set_page_load_timeout.assert_called_once_with(15.0)
     driver.quit.assert_called_once()
+
+
+def test_load_ranges_with_excludes_syntax_and_normalization(tmp_path: Path) -> None:
+    source = tmp_path / "targets.txt"
+    source.write_text(
+        "# Targets\n"
+        "192.168.1.0/24\n"
+        "2001:db8:1234::/64\n"
+        "\n"
+        "# Excludes via !\n"
+        "!192.168.1.1\n"
+        "!192.168.1.254 # gateway\n"
+        "!2001:db8:1234::1\n"
+        "!10.0.99.0/24\n"
+        "!192.168.1.128/28\n"
+        "!192.168.1.1 # duplicate exclude\n"
+        "\n"
+        "# Excludes via - and exclude prefix\n"
+        "-192.168.1.5\n"
+        "exclude 192.168.1.6\n"
+        "exclude: 10.1.0.0/16\n"
+    )
+    scope = load_ranges(source)
+    assert [str(item) for item in scope.targets] == ["192.168.1.0/24", "2001:db8:1234::/64"]
+    assert [str(item) for item in scope.excludes] == [
+        "192.168.1.1/32",
+        "192.168.1.254/32",
+        "2001:db8:1234::1/128",
+        "10.0.99.0/24",
+        "192.168.1.128/28",
+        "192.168.1.5/32",
+        "192.168.1.6/32",
+        "10.1.0.0/16",
+    ]
+
+
+def test_load_ranges_requires_target_networks(tmp_path: Path) -> None:
+    source = tmp_path / "only_excludes.txt"
+    source.write_text("!192.168.1.1\n!10.0.0.0/8\n")
+    with pytest.raises(ValueError, match="ranges file contains no target networks"):
+        load_ranges(source)
+
+
+def test_load_ranges_reports_line_number_for_invalid_exclude(tmp_path: Path) -> None:
+    source = tmp_path / "bad_exclude.txt"
+    source.write_text("192.168.1.0/24\n!not-an-ip\n")
+    with pytest.raises(ValueError, match=r":2: invalid excluded network 'not-an-ip'"):
+        load_ranges(source)
+
+
+def test_load_ranges_reports_missing_address_in_exclude(tmp_path: Path) -> None:
+    source = tmp_path / "empty_exclude.txt"
+    source.write_text("192.168.1.0/24\n!\n")
+    with pytest.raises(ValueError, match=r":2: missing address in exclusion entry"):
+        load_ranges(source)
+
+
+def test_run_scan_includes_excludefile_when_provided(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> None:
+        calls.append(command)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path, use_sudo=False)
+    exclude_file = tmp_path / "exclude.lst"
+    result = scanner.run_scan("192.168.1.0/24", 1, config, tmp_path, 500, exclude_file=exclude_file)
+    assert result == tmp_path / "range_0001_192_168_1_0_24.lst"
+    assert calls[0] == [
+        "masscan",
+        "192.168.1.0/24",
+        "-p",
+        "80",
+        "--rate",
+        "500",
+        "--excludefile",
+        str(exclude_file),
+        "-oL",
+        str(result),
+    ]
+
+
+def test_parse_masscan_filters_excluded_ips(tmp_path: Path) -> None:
+    result = tmp_path / "result.lst"
+    result.write_text(
+        "open tcp 80 192.168.1.5 0\n"
+        "open tcp 80 192.168.1.10 0\n"
+        "open tcp 443 192.168.1.200 0\n"
+        "open tcp 443 2001:db8::1 0\n"
+        "open tcp 443 2001:db8::2 0\n"
+    )
+    excludes = [
+        ipaddress.ip_network("192.168.1.5/32"),
+        ipaddress.ip_network("192.168.1.128/25"),
+        ipaddress.ip_network("2001:db8::1/128"),
+    ]
+    parsed = parse_masscan(result, tmp_path, excludes=excludes)
+    assert parsed == [("192.168.1.10", 80), ("2001:db8::2", 443)]
+    summary_content = (tmp_path / "result_summary.txt").read_text()
+    assert "192.168.1.10: open port 80" in summary_content
+    assert "2001:db8::2: open port 443" in summary_content
+    assert "192.168.1.5" not in summary_content
+    assert "192.168.1.200" not in summary_content
+    assert "2001:db8::1" not in summary_content
+
+
+def test_run_precheck_reports_excludes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = AppConfig(tmp_path / "ranges", "80", tmp_path, dry_run=True)
+    networks = [ipaddress.ip_network("192.168.1.0/24")]
+    excludes = [ipaddress.ip_network("192.168.1.1/32")]
+    directories = {"output": tmp_path}
+    logs: list[str] = []
+    monkeypatch.setattr(scanner.LOGGER, "info", lambda msg, *args: logs.append(msg % args if args else msg))
+    scanner.run_precheck(config, networks, directories, excludes=excludes)
+    assert any("1 authorized network range(s)" in log for log in logs)
+    assert any("1 excluded target range(s)" in log for log in logs)
+
+
+def test_dry_run_with_excludes_writes_exclude_file_and_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ranges = tmp_path / "ranges.txt"
+    ranges.write_text("192.168.1.0/24\n!192.168.1.1\n!192.168.1.254\n")
+    output = tmp_path / "output"
+    config = AppConfig(ranges, "80,443", output, dry_run=True, use_sudo=False)
+    status = scanner.run(config)
+    assert status == 0
+    exclude_file = output / "output" / "exclude.lst"
+    assert exclude_file.is_file()
+    assert exclude_file.read_text() == "192.168.1.1/32\n192.168.1.254/32\n"
+    summary = json.loads((output / "run-summary.json").read_text())
+    assert summary["ranges"]["authorized"] == 1
+    assert summary["ranges"]["excluded"] == 2
+    assert summary["excluded_cidrs"] == ["192.168.1.1/32", "192.168.1.254/32"]
